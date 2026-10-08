@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
-import { AlertTriangle, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Clock3, FileAudio2, FileImage, FilePlus2, FileVideo2, Flag, Headphones, ImagePlus, Keyboard, LoaderCircle, MoreHorizontal, Music2, Pause, Play, Plus, Radio, Redo2, RotateCcw, Scissors, Settings2, SlidersHorizontal, Sparkles, Undo2, Upload, WandSparkles, X, ZoomIn, ZoomOut } from 'lucide-react'
+import { AlertTriangle, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Clock3, FileAudio2, FileImage, FilePlus2, FileVideo2, Flag, Headphones, ImagePlus, LoaderCircle, MoreHorizontal, Music2, Pause, Play, Radio, Redo2, RotateCcw, Scissors, Settings2, SlidersHorizontal, Sparkles, Undo2, Upload, WandSparkles, X, ZoomIn, ZoomOut } from 'lucide-react'
 import type { AutoBoxCandidate, AutoCandidate, ExportSettings, KaraokeFlag, Project, Region, ScorePage, Segment } from './types'
 import ExportDialog from './components/ExportDialog'
 import AutoAlignDialog from './components/AutoAlignDialog'
@@ -9,13 +9,6 @@ import { initialProject } from './types'
 import { calculateCameraTarget, calculateKaraokeProgress, fitRegion, formatTime, segmentTimingAnchors } from './utils'
 
 const API = ''
-const demoRows = [
-  ['01', '小星星', '00:00.000', '00:03.500', '1'],
-  ['02', '一闪一闪亮晶晶', '00:03.500', '00:07.800', '1'],
-  ['03', '满天都是小星星', '00:07.800', '00:12.200', '1'],
-  ['04', '挂在天空放光明', '00:12.200', '00:16.400', '1'],
-]
-
 function App() {
   const [project, setProjectState] = useState<Project>(() => {
     try { return { ...initialProject, ...JSON.parse(localStorage.getItem('pujian-project') || '{}') } } catch { return initialProject }
@@ -473,12 +466,7 @@ function App() {
         <div className="rail-heading"><div><span className="eyebrow">当前歌曲</span><strong>乐谱与音频</strong></div></div>
         <button className="rail-project" title={project.source.pdf ? '替换乐谱 PDF' : '选择乐谱 PDF'} onClick={() => pdfInput.current?.click()}><div className="file-icon pdf"><FileImage size={17}/></div><div className="file-meta"><strong>{project.source.pdf || '选择乐谱 PDF'}</strong><span>{project.pages.length ? `${project.pages.length} 页 · ${Math.round((currentPage?.width || 0) / 10)} × ${Math.round((currentPage?.height || 0) / 10)} mm` : '尚未选择'}</span></div><span className="file-action">{project.source.pdf ? '替换' : '选择'}</span></button>
         <button className="rail-project" title={project.source.audio ? '替换 MP3 音频' : '选择 MP3 音频'} onClick={() => audioInput.current?.click()}><div className="file-icon audio"><FileAudio2 size={17}/></div><div className="file-meta"><strong>{project.source.audio || '选择 MP3 音频'}</strong><span>{duration ? `${formatTime(duration)} · 音频` : '尚未选择'}</span></div><span className="file-action">{project.source.audio ? '替换' : '选择'}</span></button>
-        <div className="sidebar-section"><div className="section-heading"><span>分段标注</span><span className="count-pill">{project.segments.length}</span><button className="icon-button tiny" title="添加标注" onClick={() => setTool('row')}><Plus size={15}/></button></div>
-          <div className="segment-nav">
-            {project.segments.length ? project.segments.map((seg, i) => <button key={seg.id} className={`segment-item ${selected === seg.id ? 'selected' : ''}`} onClick={() => { setSelected(seg.id); const idx = project.pages.findIndex(p => p.id === seg.pageId); if (idx >= 0) setActivePage(idx) }}><span className="segment-index">{String(i + 1).padStart(2, '0')}</span><span className="segment-info"><strong title={seg.text || ''}>{seg.text || `乐句 ${String(i + 1).padStart(2, '0')}`}</strong><span>{formatTime(seg.startTime)} — {formatTime(seg.endTime)}</span></span><span className="segment-page">P{project.pages.findIndex(p => p.id === seg.pageId) + 1}</span></button>) : demoRows.map(row => <button key={row[0]} className="segment-item muted-demo" onClick={() => flash('导入乐谱并添加区域后，这里会显示你的分段')}><span className="segment-index">{row[0]}</span><span className="segment-info"><strong>{row[1]}</strong><span>{row[2]} — {row[3]}</span></span><span className="segment-page">P{row[4]}</span></button>)}
-          </div>
-        </div>
-        <div className="sidebar-bottom"><button className="reset-annotations-button" disabled={!project.segments.length && !(project.flags || []).length} onClick={() => setResetOpen(true)}><RotateCcw size={14}/>重新标注</button><button className="help-link" onClick={() => flash('拖动创建标注 · 空格播放 · 方向键微调时间')}><CircleHelp size={16}/> 使用帮助</button><div className="shortcut-tip"><Keyboard size={15}/><span>按 <kbd>Space</kbd> 播放 / 暂停</span></div></div>
+        <div className="sidebar-bottom"><button className="reset-annotations-button" disabled={!project.segments.length && !(project.flags || []).length} onClick={() => setResetOpen(true)}><RotateCcw size={14}/>重新标注</button></div>
       </aside>
 
       <main className="workspace">
@@ -493,7 +481,8 @@ function App() {
                   <clipPath id="ink-reveal"><rect x={(activeSegment?.region.x || 0) * 1000} y={(activeSegment?.region.y || 0) * 1414} width={(activeSegment?.region.width || 0) * progress * 1000} height={(activeSegment?.region.height || 0) * 1414}/></clipPath>
                 </defs>
                 {activeSegment?.pageId === currentPage.id && progress > 0 && <image href={currentPage.image} x="0" y="0" width="1000" height="1414" preserveAspectRatio="none" filter="url(#ink-recolor)" clipPath="url(#ink-reveal)" pointerEvents="none"/>}
-                {project.segments.filter(s => s.pageId === currentPage.id).map(seg => { const r = seg.region; return <g key={seg.id} className={`annotation ${selected === seg.id ? 'is-selected' : ''}`} onPointerDown={e => { if (tool === 'row') return; e.stopPropagation(); if (tool === 'anchor') { addAnchor(seg, e); return }; if (tool === 'cut') { toggleCut(seg, e); return }; setSelected(seg.id); dragRef.current = { id: seg.id, kind: 'move', startX: e.clientX, startY: e.clientY, region: { ...r } }; (e.currentTarget as SVGGElement).setPointerCapture(e.pointerId) }}>
+                {project.segments.filter(s => s.pageId === currentPage.id).map(seg => { const r = seg.region; return <g key={seg.id} className={`annotation ${selected === seg.id ? 'is-selected' : ''}`} onPointerDown={e => { e.stopPropagation(); setSelected(seg.id); if (tool === 'row') return; if (tool === 'anchor') { addAnchor(seg, e); return }; if (tool === 'cut') { toggleCut(seg, e); return }; dragRef.current = { id: seg.id, kind: 'move', startX: e.clientX, startY: e.clientY, region: { ...r } }; (e.currentTarget as SVGGElement).setPointerCapture(e.pointerId) }}>
+                  <rect className="region-hit-area" x={r.x * 1000} y={r.y * 1414} width={r.width * 1000} height={r.height * 1414} rx="4"/>
                   <rect className="region-outline" x={r.x * 1000} y={r.y * 1414} width={r.width * 1000} height={r.height * 1414} rx="4"/>
                   {(seg.cuts || []).map((cut, index) => <line key={`${seg.id}-cut-${index}`} className="beat-cut" x1={(r.x + r.width * cut) * 1000} x2={(r.x + r.width * cut) * 1000} y1={r.y * 1414} y2={(r.y + r.height) * 1414}><title>第 {index + 1} 拍分界</title></line>)}
                   {(selected === seg.id || activeSegment?.id === seg.id) && (seg.anchors || []).map(anchor => <g key={`${seg.id}-${anchor.time}`} className="anchor-point"><line x1={(r.x + r.width * anchor.progress) * 1000} x2={(r.x + r.width * anchor.progress) * 1000} y1={r.y * 1414} y2={(r.y + r.height) * 1414}/><circle cx={(r.x + r.width * anchor.progress) * 1000} cy={(r.y + r.height / 2) * 1414} r="7"/><title>{formatTime(anchor.time)}</title></g>)}
