@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.venv/
+reference/models/
+__pycache__/
+*.py[cod]
+backend/projects/*/source.pdf
+backend/projects/*/project.json
+backend/media/*
+backend/exports/*
+!backend/media/.gitkeep
+*.log
+*.tsbuildinfo
+reference/*.json
+reference/JumpingBarSetup.rar
+reference/help-extracted.txt
+reference/sample-project-decoded.txt
