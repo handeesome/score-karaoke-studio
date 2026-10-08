@@ -192,55 +192,6 @@ def _run_alignment(job_id: str, project: dict, audio_path: Path, duration: float
             alignment_jobs[job_id].update(status="failed", error=str(error))
 
 
-@app.get("/api/projects/recent")
-def load_recent_project():
-    candidates = list(PROJECTS.glob("*/project.json"))
-    if not candidates:
-        raise HTTPException(status_code=404, detail="尚无已保存项目")
-    newest = max(candidates, key=lambda item: item.stat().st_mtime)
-    return json.loads(newest.read_text(encoding="utf-8"))
-
-
-@app.get("/api/projects")
-def list_projects():
-    items = []
-    for path in PROJECTS.glob("*/project.json"):
-        try:
-            project = json.loads(path.read_text(encoding="utf-8"))
-            items.append({
-                "projectId": project.get("projectId", path.parent.name),
-                "projectName": project.get("projectName", "未命名歌曲"),
-                "updatedAt": path.stat().st_mtime,
-                "pdf": project.get("source", {}).get("pdf"),
-                "audio": project.get("source", {}).get("audio"),
-            })
-        except (OSError, ValueError):
-            continue
-    return sorted(items, key=lambda item: item["updatedAt"], reverse=True)
-
-
-@app.post("/api/projects")
-def create_project(payload: dict | None = None):
-    project_id = uuid.uuid4().hex
-    project_name = str((payload or {}).get("projectName") or "未命名歌曲")[:120]
-    project = {
-        "version": 1,
-        "projectName": project_name,
-        "projectId": project_id,
-        "source": {"pdf": None, "audio": None, "audioUrl": None},
-        "pages": [],
-        "segments": [],
-        "flags": [],
-        "audioDuration": None,
-        "export": {"preset": "landscape", "width": 1920, "height": 1080, "fps": 30, "scoreZoom": 1.0},
-        "highlight": {"opacity": 0.32},
-    }
-    target = PROJECTS / project_id
-    target.mkdir(parents=True)
-    (target / "project.json").write_text(json.dumps(project, ensure_ascii=False, indent=2), encoding="utf-8")
-    return project
-
-
 @app.put("/api/projects/{project_id}")
 def save_project(project_id: str, project: ProjectDocument):
     if not re.fullmatch(r"[a-f0-9]{32}", project_id):
@@ -251,16 +202,6 @@ def save_project(project_id: str, project: ProjectDocument):
     payload["projectId"] = project_id
     (target / "project.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return {"saved": True, "projectId": project_id}
-
-
-@app.get("/api/projects/{project_id}")
-def load_project(project_id: str):
-    if not re.fullmatch(r"[a-f0-9]{32}", project_id):
-        raise HTTPException(status_code=400, detail="无效的项目编号")
-    path = PROJECTS / project_id / "project.json"
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="找不到该项目")
-    return json.loads(path.read_text(encoding="utf-8"))
 
 
 @app.post("/api/projects/{project_id}/validate")

@@ -69,25 +69,8 @@ body{min-width:0;height:100dvh;overflow:hidden}
 .anchor-point line{stroke:#bd9a2d;stroke-width:2;stroke-dasharray:5 3;vector-effect:non-scaling-stroke}
 .anchor-point circle{fill:#fff7cf;stroke:#b89938;stroke-width:2;vector-effect:non-scaling-stroke}
 .anchor-mode-button{margin:8px 0 5px}
-.project-menu-wrap{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:8}
-.project-title.title-button{position:static;transform:none;border:0;background:transparent;padding:8px 10px;border-radius:7px;cursor:pointer}
-.project-title.title-button:hover{background:#f7f8f5}
-.project-menu{position:absolute;top:calc(100% + 5px);left:50%;transform:translateX(-50%);width:270px;max-height:min(420px,70dvh);overflow:auto;padding:7px;border:1px solid #e8e9e3;border-radius:9px;background:#fff;box-shadow:0 12px 32px #25271c22}
-.project-menu-create,.project-menu-item{width:100%;display:flex;align-items:center;text-align:left;border:0;border-radius:6px;background:transparent;padding:9px;color:#42453e;font-size:11px}
-.project-menu-create{gap:7px;color:#55745a;font-weight:650}
-.project-menu-create:hover,.project-menu-item:hover{background:#f4f6f2}
-.project-menu-heading{padding:9px 9px 5px;color:#a1a39b;font-size:9px;text-transform:uppercase;letter-spacing:.06em}
-.project-menu-item{flex-direction:column;align-items:flex-start;gap:3px}
-.project-menu-item.current{background:#f5f7f3}
-.project-menu-item span{font-weight:600}
-.project-menu-item small{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#999c93;font-size:9px}
-.project-menu-empty{padding:10px;color:#999c93;font-size:10px}
-.rail-project-switcher{position:relative;left:auto;top:auto;transform:none;width:100%;min-width:0;z-index:8}
-.rail-project-switcher .project-title{position:static;display:flex;flex-direction:column;align-items:stretch;gap:4px;width:100%;padding:5px 7px;text-align:left}
-.project-switcher-label{color:#a0a298;font-size:9px;font-weight:700;letter-spacing:.08em}
-.project-switcher-name{display:flex;align-items:center;gap:6px;min-width:0;color:#383a35;font-size:12px;font-weight:600}
-.project-switcher-name svg{flex:none;margin-left:auto;color:#90938b}
-.rail-project-switcher .project-menu{top:calc(100% + 4px);left:0;transform:none;width:100%;max-height:min(420px,65dvh)}
+.file-action{flex:none;margin-left:auto;padding:4px 6px;border-radius:5px;background:#edf3ee;color:#52745b;font-size:9px;font-weight:700}
+.rail-project:hover .file-action{background:#dfeadf;color:#385844}
 .modal-backdrop{position:fixed;z-index:20;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;background:#171a1778;backdrop-filter:blur(3px)}
 .export-dialog{width:min(900px,96vw);max-height:92dvh;display:flex;flex-direction:column;overflow:hidden;border:1px solid #e8e9e3;border-radius:12px;background:#fff;box-shadow:0 24px 80px #0003}
 .export-dialog-header{display:flex;align-items:center;gap:11px;padding:17px 20px;border-bottom:1px solid #eeefe9}

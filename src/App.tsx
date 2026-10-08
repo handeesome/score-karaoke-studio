@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
-import { AlertTriangle, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Clock3, Download, FileAudio2, FileImage, FilePlus2, FileVideo2, Flag, FolderOpen, Headphones, ImagePlus, Keyboard, LoaderCircle, MoreHorizontal, Music2, Pause, Play, Plus, Radio, Redo2, RotateCcw, Save, Scissors, Settings2, SlidersHorizontal, Sparkles, Undo2, Upload, WandSparkles, X, ZoomIn, ZoomOut } from 'lucide-react'
+import { AlertTriangle, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Clock3, FileAudio2, FileImage, FilePlus2, FileVideo2, Flag, Headphones, ImagePlus, Keyboard, LoaderCircle, MoreHorizontal, Music2, Pause, Play, Plus, Radio, Redo2, RotateCcw, Scissors, Settings2, SlidersHorizontal, Sparkles, Undo2, Upload, WandSparkles, X, ZoomIn, ZoomOut } from 'lucide-react'
 import type { AutoBoxCandidate, AutoCandidate, ExportSettings, KaraokeFlag, Project, Region, ScorePage, Segment } from './types'
 import ExportDialog from './components/ExportDialog'
 import AutoAlignDialog from './components/AutoAlignDialog'
@@ -20,14 +20,12 @@ function App() {
   const [project, setProjectState] = useState<Project>(() => {
     try { return { ...initialProject, ...JSON.parse(localStorage.getItem('pujian-project') || '{}') } } catch { return initialProject }
   })
-  const hadSavedProject = useRef(Boolean(localStorage.getItem('pujian-project')))
   const [activePage, setActivePage] = useState(0)
   const [selected, setSelected] = useState<string | null>(null)
   const [zoom, setZoom] = useState(0.9)
   const [duration, setDuration] = useState(0)
   const [time, setTime] = useState(0)
   const [playing, setPlaying] = useState(false)
-  const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState('')
   const [exportOpen, setExportOpen] = useState(false)
   const [exportSettings, setExportSettings] = useState<ExportSettings>(initialProject.export!)
@@ -36,14 +34,12 @@ function App() {
   const [validation, setValidation] = useState<{ valid: boolean; errors: string[]; warnings: string[] } | null>(null)
   const [exportJob, setExportJob] = useState<{ jobId: string; status: string; progress: number; warnings?: string[]; downloadUrl?: string | null; error?: string } | null>(null)
   const [exportBusy, setExportBusy] = useState(false)
-  const [projectMenuOpen, setProjectMenuOpen] = useState(false)
   const [resetOpen, setResetOpen] = useState(false)
   const [autoBusy, setAutoBusy] = useState(false)
   const [autoStage, setAutoStage] = useState('')
   const [autoCandidates, setAutoCandidates] = useState<AutoCandidate[] | null>(null)
   const [boxCandidates, setBoxCandidates] = useState<AutoBoxCandidate[] | null>(null)
   const [boxBusy, setBoxBusy] = useState(false)
-  const [projectList, setProjectList] = useState<{ projectId: string; projectName: string; pdf?: string | null; audio?: string | null }[]>([])
   const [tool, setTool] = useState<'select' | 'anchor' | 'row' | 'cut'>('select')
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
@@ -51,7 +47,6 @@ function App() {
   const audioInput = useRef<HTMLInputElement>(null)
   const canvasRef = useRef<HTMLDivElement>(null)
   const pageRef = useRef<HTMLDivElement>(null)
-  const projectMenuRef = useRef<HTMLDivElement>(null)
   const previewUrlRef = useRef<string | null>(null)
   const dragRef = useRef<{ id: string; kind: 'move' | 'resize'; startX: number; startY: number; region: Region; historySaved?: boolean } | null>(null)
   const draftRef = useRef<{ x: number; y: number } | null>(null)
@@ -103,18 +98,9 @@ function App() {
     }, 700)
     return () => window.clearTimeout(timer)
   }, [project])
-  useEffect(() => { if (!hadSavedProject.current) { fetch(`${API}/api/projects/recent`).then(r => r.ok ? r.json() : null).then(data => { if (data) setProject(data) }).catch(() => {}) } }, [])
   useEffect(() => () => { if (audioUrl) URL.revokeObjectURL(audioUrl) }, [audioUrl])
   useEffect(() => () => { if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current) }, [])
   useEffect(() => { if (project.export) setExportSettings(project.export) }, [project.export])
-  useEffect(() => {
-    if (!projectMenuOpen) return
-    const closeOnOutsideClick = (event: PointerEvent) => { if (!projectMenuRef.current?.contains(event.target as Node)) setProjectMenuOpen(false) }
-    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setProjectMenuOpen(false) }
-    document.addEventListener('pointerdown', closeOnOutsideClick)
-    document.addEventListener('keydown', closeOnEscape)
-    return () => { document.removeEventListener('pointerdown', closeOnOutsideClick); document.removeEventListener('keydown', closeOnEscape) }
-  }, [projectMenuOpen])
   useEffect(() => { if (!audioUrl && project.source.audioUrl && audioRef.current) audioRef.current.src = project.source.audioUrl }, [project.source.audioUrl, audioUrl])
   const currentPage: ScorePage | undefined = project.pages[activePage]
   const activeSegment = useMemo(() => project.segments.find(s => s.startTime <= time && s.endTime >= time), [project.segments, time])
@@ -179,23 +165,36 @@ function App() {
   const updateSegment = (id: string, patch: Partial<Segment>) => setProject(p => ({ ...p, segments: p.segments.map(s => s.id === id ? { ...s, ...patch } : s) }))
   const onPdf = async (file?: File) => {
     if (!file) return
+    const replacing = Boolean(project.source.pdf)
     const form = new FormData(); form.append('file', file)
     try {
       const response = await fetch(`${API}/api/import/pdf`, { method: 'POST', body: form })
       if (!response.ok) throw new Error((await response.json()).detail || 'PDF 导入失败')
       const data = await response.json()
       const pages: ScorePage[] = data.pages.map((p: any, i: number) => ({ id: `page-${String(i + 1).padStart(3, '0')}`, image: p.image, width: p.width, height: p.height }))
-      setProject(p => ({ ...p, projectId: data.projectId, projectName: data.filename.replace(/\.pdf$/i, ''), source: { ...p.source, pdf: data.filename }, pages, segments: [], flags: [] })); setActivePage(0); setSelected(null); setTool('row'); flash(`已导入 ${pages.length} 页 PDF`)
+      audioRef.current?.pause()
+      if (audioRef.current) audioRef.current.currentTime = 0
+      setProject(p => ({ ...p, projectId: data.projectId, projectName: data.filename.replace(/\.pdf$/i, ''), source: { ...p.source, pdf: data.filename }, pages, segments: [], flags: [] }))
+      setActivePage(0); setSelected(null); setTime(0); setPlaying(false); setTool('row')
+      flash(replacing ? `已替换乐谱，原有标注已清空` : `已导入 ${pages.length} 页 PDF`)
     } catch (error) { flash(error instanceof Error ? error.message : '无法连接渲染服务，请先启动后端') }
   }
   const onAudio = async (file?: File) => {
     if (!file) return
-    if (audioUrl) URL.revokeObjectURL(audioUrl)
-    const url = URL.createObjectURL(file); setAudioUrl(url)
-    setProject(p => ({ ...p, source: { ...p.source, audio: file.name, audioUrl: null }, audioDuration: null }))
-    try { const body = new FormData(); body.append('file', file); const response = await fetch(`${API}/api/import/audio`, { method: 'POST', body }); if (response.ok) { const data = await response.json(); setProject(p => ({ ...p, source: { ...p.source, audioUrl: data.url }, audioDuration: data.duration || p.audioDuration })) } } catch { /* browser playback still works locally */ }
-    if (audioRef.current) { audioRef.current.src = url; audioRef.current.load() }
-    flash('音频已载入，可以开始播放')
+    const replacing = Boolean(project.source.audio)
+    try {
+      const body = new FormData(); body.append('file', file)
+      const response = await fetch(`${API}/api/import/audio`, { method: 'POST', body })
+      const data = await response.json()
+      if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '音频导入失败')
+      const url = URL.createObjectURL(file)
+      audioRef.current?.pause()
+      setAudioUrl(url)
+      setProject(p => ({ ...p, source: { ...p.source, audio: file.name, audioUrl: data.url }, audioDuration: data.duration || null, flags: [], segments: p.segments.map((segment, index) => ({ ...segment, startTime: index * 4, endTime: (index + 1) * 4, anchors: [] })) }))
+      setSelected(null); setTime(0); setDuration(data.duration || 0); setPlaying(false)
+      if (audioRef.current) { audioRef.current.src = url; audioRef.current.load() }
+      flash(replacing ? '已替换音频，请重新打点校准时间' : '音频已载入，可以开始播放')
+    } catch (error) { flash(error instanceof Error ? error.message : '音频导入失败，请重试') }
   }
   const togglePlay = () => { const el = audioRef.current; if (!el) { flash('请先导入 MP3 音频'); return }; if (el.paused) { void el.play(); setPlaying(true) } else { el.pause(); setPlaying(false) } }
   const seek = (next: number) => { const el = audioRef.current; if (!el) return; el.currentTime = Math.max(0, Math.min(duration || 0, next)); setTime(el.currentTime) }
@@ -313,37 +312,9 @@ function App() {
     localStorage.setItem('pujian-project', JSON.stringify(snapshot))
     if (snapshot.projectId) {
       const response = await fetch(`${API}/api/projects/${snapshot.projectId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(snapshot) })
-      if (!response.ok) throw new Error('本地项目保存失败')
+      if (!response.ok) throw new Error('当前编辑内容暂存失败')
     }
   }
-  const refreshProjects = async () => {
-    try { const response = await fetch(`${API}/api/projects`); if (response.ok) setProjectList(await response.json()) } catch { setProjectList([]) }
-  }
-  const createProject = async () => {
-    try {
-      const response = await fetch(`${API}/api/projects`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projectName: '未命名歌曲' }) })
-      if (!response.ok) throw new Error('新建项目失败')
-      const next = await response.json() as Project
-      setProject(next); setSelected(null); setActivePage(0); setTime(0); setDuration(0); setProjectMenuOpen(false)
-      if (audioUrl) URL.revokeObjectURL(audioUrl)
-      setAudioUrl(null)
-      if (audioRef.current) { audioRef.current.pause(); audioRef.current.removeAttribute('src'); audioRef.current.load() }
-      undoHistory.current = []; redoHistory.current = []; refreshProjects(); flash('已新建项目')
-    } catch (error) { flash(error instanceof Error ? error.message : '无法新建项目，请确认本地服务已启动') }
-  }
-  const openProject = async (projectId: string) => {
-    try {
-      const response = await fetch(`${API}/api/projects/${projectId}`)
-      if (!response.ok) throw new Error('无法打开这个项目')
-      const next = await response.json() as Project
-      if (audioUrl) URL.revokeObjectURL(audioUrl)
-      setAudioUrl(null); setProject(next); setSelected(null); setActivePage(0); setTime(0); setDuration(0); setTool('select'); setProjectMenuOpen(false)
-      undoHistory.current = []; redoHistory.current = []
-      if (audioRef.current) { audioRef.current.pause(); audioRef.current.removeAttribute('src'); audioRef.current.load() }
-      flash(`已打开「${next.projectName}」`)
-    } catch (error) { flash(error instanceof Error ? error.message : '项目打开失败') }
-  }
-  const saveProject = async () => { setSaving(true); try { await persistProject(project); flash('项目已保存') } catch { flash('项目已保存到此浏览器') } finally { setSaving(false) } }
   const startAutoBoxes = async () => {
     if (!project.pages.length || boxBusy) return
     setBoxBusy(true)
@@ -434,14 +405,14 @@ function App() {
     flash(`已应用 ${chosen.length} 条候选；请重点试听待核对的乐句`)
   }
   const openExport = async () => {
-    if (!project.projectId) { flash('请先导入并保存一个乐谱项目'); return }
+    if (!project.projectId) { flash('请先选择乐谱 PDF'); return }
     const settings = project.export || initialProject.export!
     setExportSettings(settings); setPreviewTime(time); setExportJob(null); setValidation(null); setExportOpen(true)
     try {
       await persistProject({ ...project, export: settings })
       const response = await fetch(`${API}/api/projects/${project.projectId}/validate`, { method: 'POST' })
       if (response.ok) setValidation(await response.json())
-    } catch (error) { flash(error instanceof Error ? error.message : '无法读取项目校验结果') }
+    } catch (error) { flash(error instanceof Error ? error.message : '无法检查导出条件') }
   }
   const startVideoExport = async () => {
     if (!project.projectId || exportBusy) return
@@ -495,15 +466,13 @@ function App() {
   return <div className="app-shell">
     <header className="topbar">
       <div className="brand"><div className="brand-mark"><Music2 size={17} strokeWidth={2.4} /></div><span>谱间</span><span className="brand-divider"/><span className="product-label">歌谱同步工作台</span></div>
-      <div className="top-actions"><button className="icon-button" title="撤销（Ctrl+Z）" disabled={!undoHistory.current.length} onClick={undoProject}><Undo2 size={17}/></button><button className="icon-button" title="重做（Ctrl+Shift+Z）" disabled={!redoHistory.current.length} onClick={redoProject}><Redo2 size={17}/></button><span className="top-separator"/><button className="button button-quiet" onClick={saveProject}><Save size={15}/>{saving ? '保存中…' : '保存'}</button><button className="button button-primary" onClick={openExport}><Upload size={15}/>导出视频</button><button className="avatar">林</button></div>
+      <div className="top-actions"><button className="icon-button" title="撤销（Ctrl+Z）" disabled={!undoHistory.current.length} onClick={undoProject}><Undo2 size={17}/></button><button className="icon-button" title="重做（Ctrl+Shift+Z）" disabled={!redoHistory.current.length} onClick={redoProject}><Redo2 size={17}/></button><span className="top-separator"/><button className="button button-primary" onClick={openExport}><Upload size={15}/>导出视频</button></div>
     </header>
     <div className="main-layout">
       <aside className="left-rail">
-        <div className="rail-heading"><div className="project-menu-wrap rail-project-switcher" ref={projectMenuRef}><button className="project-title title-button" aria-expanded={projectMenuOpen} aria-label={`切换项目，当前项目：${project.projectName}`} onClick={() => { const opening = !projectMenuOpen; setProjectMenuOpen(opening); if (opening) void refreshProjects() }}><span className="project-switcher-label">当前项目</span><span className="project-switcher-name">{project.projectName}<ChevronDown size={14}/></span></button>{projectMenuOpen && <div className="project-menu"><button className="project-menu-create" onClick={() => { void createProject() }}><Plus size={15}/>新建项目</button><div className="project-menu-heading">最近项目</div>{projectList.length ? projectList.map(item => <button key={item.projectId} className={`project-menu-item ${item.projectId === project.projectId ? 'current' : ''}`} onClick={() => { if (item.projectId !== project.projectId) void openProject(item.projectId); else setProjectMenuOpen(false) }}><span>{item.projectName}</span><small>{item.pdf || item.audio || '尚未导入文件'}</small></button>) : <div className="project-menu-empty">还没有保存的项目</div>}</div>}</div></div>
-        <button className="rail-project"><div className="file-icon pdf"><FileImage size={17}/></div><div className="file-meta"><strong>{project.source.pdf || '导入乐谱 PDF'}</strong><span>{project.pages.length ? `${project.pages.length} 页 · ${Math.round((currentPage?.width || 0) / 10)} × ${Math.round((currentPage?.height || 0) / 10)} mm` : '尚未添加文件'}</span></div>{project.source.pdf && <Check className="file-check" size={15}/>}</button>
-        <button className="rail-project"><div className="file-icon audio"><FileAudio2 size={17}/></div><div className="file-meta"><strong>{project.source.audio || '导入伴奏音频'}</strong><span>{duration ? `${formatTime(duration)} · MP3 音频` : '尚未添加文件'}</span></div>{project.source.audio && <Check className="file-check" size={15}/>}</button>
-        <button className="upload-row" onClick={() => pdfInput.current?.click()}><Plus size={15}/> 添加 PDF 乐谱</button>
-        <button className="upload-row" onClick={() => audioInput.current?.click()}><Plus size={15}/> 添加 MP3 音频</button>
+        <div className="rail-heading"><div><span className="eyebrow">当前歌曲</span><strong>乐谱与音频</strong></div></div>
+        <button className="rail-project" title={project.source.pdf ? '替换乐谱 PDF' : '选择乐谱 PDF'} onClick={() => pdfInput.current?.click()}><div className="file-icon pdf"><FileImage size={17}/></div><div className="file-meta"><strong>{project.source.pdf || '选择乐谱 PDF'}</strong><span>{project.pages.length ? `${project.pages.length} 页 · ${Math.round((currentPage?.width || 0) / 10)} × ${Math.round((currentPage?.height || 0) / 10)} mm` : '尚未选择'}</span></div><span className="file-action">{project.source.pdf ? '替换' : '选择'}</span></button>
+        <button className="rail-project" title={project.source.audio ? '替换 MP3 音频' : '选择 MP3 音频'} onClick={() => audioInput.current?.click()}><div className="file-icon audio"><FileAudio2 size={17}/></div><div className="file-meta"><strong>{project.source.audio || '选择 MP3 音频'}</strong><span>{duration ? `${formatTime(duration)} · 音频` : '尚未选择'}</span></div><span className="file-action">{project.source.audio ? '替换' : '选择'}</span></button>
         <div className="sidebar-section"><div className="section-heading"><span>分段标注</span><span className="count-pill">{project.segments.length}</span><button className="icon-button tiny" title="添加标注" onClick={() => setTool('row')}><Plus size={15}/></button></div>
           <div className="segment-nav">
             {project.segments.length ? project.segments.map((seg, i) => <button key={seg.id} className={`segment-item ${selected === seg.id ? 'selected' : ''}`} onClick={() => { setSelected(seg.id); const idx = project.pages.findIndex(p => p.id === seg.pageId); if (idx >= 0) setActivePage(idx) }}><span className="segment-index">{String(i + 1).padStart(2, '0')}</span><span className="segment-info"><strong title={seg.text || ''}>{seg.text || `乐句 ${String(i + 1).padStart(2, '0')}`}</strong><span>{formatTime(seg.startTime)} — {formatTime(seg.endTime)}</span></span><span className="segment-page">P{project.pages.findIndex(p => p.id === seg.pageId) + 1}</span></button>) : demoRows.map(row => <button key={row[0]} className="segment-item muted-demo" onClick={() => flash('导入乐谱并添加区域后，这里会显示你的分段')}><span className="segment-index">{row[0]}</span><span className="segment-info"><strong>{row[1]}</strong><span>{row[2]} — {row[3]}</span></span><span className="segment-page">P{row[4]}</span></button>)}
