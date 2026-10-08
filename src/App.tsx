@@ -1,0 +1,555 @@
+import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { AlertTriangle, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Clock3, Download, FileAudio2, FileImage, FilePlus2, FileVideo2, Flag, FolderOpen, Headphones, ImagePlus, Keyboard, LoaderCircle, MoreHorizontal, Music2, Pause, Play, Plus, Radio, Redo2, RotateCcw, Save, Scissors, Settings2, SlidersHorizontal, Sparkles, Undo2, Upload, WandSparkles, X, ZoomIn, ZoomOut } from 'lucide-react'
+import type { AutoBoxCandidate, AutoCandidate, ExportSettings, KaraokeFlag, Project, Region, ScorePage, Segment } from './types'
+import ExportDialog from './components/ExportDialog'
+import AutoAlignDialog from './components/AutoAlignDialog'
+import TimelinePanel from './components/TimelinePanel'
+import AutoBoxDialog from './components/AutoBoxDialog'
+import { initialProject } from './types'
+import { calculateCameraTarget, calculateKaraokeProgress, fitRegion, formatTime, segmentTimingAnchors } from './utils'
+
+const API = ''
+const demoRows = [
+  ['01', '小星星', '00:00.000', '00:03.500', '1'],
+  ['02', '一闪一闪亮晶晶', '00:03.500', '00:07.800', '1'],
+  ['03', '满天都是小星星', '00:07.800', '00:12.200', '1'],
+  ['04', '挂在天空放光明', '00:12.200', '00:16.400', '1'],
+]
+
+function App() {
+  const [project, setProjectState] = useState<Project>(() => {
+    try { return { ...initialProject, ...JSON.parse(localStorage.getItem('pujian-project') || '{}') } } catch { return initialProject }
+  })
+  const hadSavedProject = useRef(Boolean(localStorage.getItem('pujian-project')))
+  const [activePage, setActivePage] = useState(0)
+  const [selected, setSelected] = useState<string | null>(null)
+  const [zoom, setZoom] = useState(0.9)
+  const [duration, setDuration] = useState(0)
+  const [time, setTime] = useState(0)
+  const [playing, setPlaying] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [message, setMessage] = useState('')
+  const [exportOpen, setExportOpen] = useState(false)
+  const [exportSettings, setExportSettings] = useState<ExportSettings>(initialProject.export!)
+  const [previewTime, setPreviewTime] = useState(0)
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const [validation, setValidation] = useState<{ valid: boolean; errors: string[]; warnings: string[] } | null>(null)
+  const [exportJob, setExportJob] = useState<{ jobId: string; status: string; progress: number; warnings?: string[]; downloadUrl?: string | null; error?: string } | null>(null)
+  const [exportBusy, setExportBusy] = useState(false)
+  const [projectMenuOpen, setProjectMenuOpen] = useState(false)
+  const [resetOpen, setResetOpen] = useState(false)
+  const [autoBusy, setAutoBusy] = useState(false)
+  const [autoStage, setAutoStage] = useState('')
+  const [autoCandidates, setAutoCandidates] = useState<AutoCandidate[] | null>(null)
+  const [boxCandidates, setBoxCandidates] = useState<AutoBoxCandidate[] | null>(null)
+  const [boxBusy, setBoxBusy] = useState(false)
+  const [projectList, setProjectList] = useState<{ projectId: string; projectName: string; pdf?: string | null; audio?: string | null }[]>([])
+  const [tool, setTool] = useState<'select' | 'anchor' | 'row' | 'cut'>('select')
+  const [audioUrl, setAudioUrl] = useState<string | null>(null)
+  const audioRef = useRef<HTMLAudioElement>(null)
+  const pdfInput = useRef<HTMLInputElement>(null)
+  const audioInput = useRef<HTMLInputElement>(null)
+  const canvasRef = useRef<HTMLDivElement>(null)
+  const pageRef = useRef<HTMLDivElement>(null)
+  const projectMenuRef = useRef<HTMLDivElement>(null)
+  const previewUrlRef = useRef<string | null>(null)
+  const dragRef = useRef<{ id: string; kind: 'move' | 'resize'; startX: number; startY: number; region: Region; historySaved?: boolean } | null>(null)
+  const draftRef = useRef<{ x: number; y: number } | null>(null)
+  const [draft, setDraft] = useState<Region | null>(null)
+  const [isDrawing, setIsDrawing] = useState(false)
+  const projectRef = useRef(project)
+  const undoHistory = useRef<Project[]>([])
+  const redoHistory = useRef<Project[]>([])
+  const lastHistoryAt = useRef(0)
+  const setProject: Dispatch<SetStateAction<Project>> = (action) => {
+    const before = projectRef.current
+    const next = typeof action === 'function' ? action(before) : action
+    if (next === before) return
+    const now = Date.now()
+    if (dragRef.current && !dragRef.current.historySaved) {
+      undoHistory.current.push(before)
+      dragRef.current.historySaved = true
+    } else if (!dragRef.current && (now - lastHistoryAt.current > 350 || !undoHistory.current.length)) {
+      undoHistory.current.push(before)
+      if (undoHistory.current.length > 100) undoHistory.current.shift()
+    }
+    redoHistory.current = []
+    lastHistoryAt.current = now
+    projectRef.current = next
+    setProjectState(next)
+  }
+  const undoProject = () => {
+    const previous = undoHistory.current.pop()
+    if (!previous) return
+    redoHistory.current.push(projectRef.current)
+    projectRef.current = previous
+    lastHistoryAt.current = 0
+    setProjectState(previous)
+  }
+  const redoProject = () => {
+    const next = redoHistory.current.pop()
+    if (!next) return
+    undoHistory.current.push(projectRef.current)
+    projectRef.current = next
+    lastHistoryAt.current = 0
+    setProjectState(next)
+  }
+
+  useEffect(() => { localStorage.setItem('pujian-project', JSON.stringify(project)) }, [project])
+  useEffect(() => {
+    if (!project.projectId) return
+    const timer = window.setTimeout(() => {
+      fetch(`${API}/api/projects/${project.projectId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(project) }).catch(() => {})
+    }, 700)
+    return () => window.clearTimeout(timer)
+  }, [project])
+  useEffect(() => { if (!hadSavedProject.current) { fetch(`${API}/api/projects/recent`).then(r => r.ok ? r.json() : null).then(data => { if (data) setProject(data) }).catch(() => {}) } }, [])
+  useEffect(() => () => { if (audioUrl) URL.revokeObjectURL(audioUrl) }, [audioUrl])
+  useEffect(() => () => { if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current) }, [])
+  useEffect(() => { if (project.export) setExportSettings(project.export) }, [project.export])
+  useEffect(() => {
+    if (!projectMenuOpen) return
+    const closeOnOutsideClick = (event: PointerEvent) => { if (!projectMenuRef.current?.contains(event.target as Node)) setProjectMenuOpen(false) }
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setProjectMenuOpen(false) }
+    document.addEventListener('pointerdown', closeOnOutsideClick)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => { document.removeEventListener('pointerdown', closeOnOutsideClick); document.removeEventListener('keydown', closeOnEscape) }
+  }, [projectMenuOpen])
+  useEffect(() => { if (!audioUrl && project.source.audioUrl && audioRef.current) audioRef.current.src = project.source.audioUrl }, [project.source.audioUrl, audioUrl])
+  const currentPage: ScorePage | undefined = project.pages[activePage]
+  const activeSegment = useMemo(() => project.segments.find(s => s.startTime <= time && s.endTime >= time), [project.segments, time])
+  const progress = activeSegment ? calculateKaraokeProgress(activeSegment.startTime, activeSegment.endTime, segmentTimingAnchors(activeSegment), time) : 0
+
+  useEffect(() => {
+    if (!playing || !activeSegment || !canvasRef.current) return
+    const targetPage = project.pages.findIndex(page => page.id === activeSegment.pageId)
+    if (targetPage < 0) return
+    if (targetPage !== activePage) { setActivePage(targetPage); return }
+    const frame = requestAnimationFrame(() => {
+      const canvas = canvasRef.current; const page = pageRef.current
+      if (!canvas || !page) return
+      const canvasRect = canvas.getBoundingClientRect(); const pageRect = page.getBoundingClientRect()
+      const centerY = canvas.scrollTop + pageRect.top - canvasRect.top + (activeSegment.region.y + activeSegment.region.height / 2) * pageRect.height
+      const target = calculateCameraTarget(centerY, canvas.scrollHeight, canvas.clientHeight, canvas.scrollTop)
+      if (Math.abs(target - canvas.scrollTop) > 1) canvas.scrollTo({ top: target, behavior: 'smooth' })
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [activeSegment?.id, activePage, playing, project.pages])
+  useEffect(() => {
+    if (!exportJob || !['queued', 'running'].includes(exportJob.status)) return
+    let cancelled = false
+    const poll = async () => {
+      while (!cancelled) {
+        await new Promise(resolve => window.setTimeout(resolve, 900))
+        try {
+          const response = await fetch(`${API}/api/exports/${exportJob.jobId}`)
+          if (!response.ok) throw new Error('无法读取导出进度')
+          const next = await response.json()
+          if (cancelled) return
+          setExportJob({ ...next, jobId: exportJob.jobId })
+          if (next.status === 'completed') { setExportBusy(false); flash('视频已导出完成'); return }
+          if (next.status === 'failed') { setExportBusy(false); return }
+        } catch (error) {
+          if (!cancelled) { setExportJob(j => j ? { ...j, status: 'failed', error: error instanceof Error ? error.message : '导出状态读取失败' } : j); setExportBusy(false) }
+          return
+        }
+      }
+    }
+    void poll()
+    return () => { cancelled = true }
+  }, [exportJob?.jobId, exportJob?.status])
+  useEffect(() => {
+    if (!exportOpen || !project.projectId) return
+    const controller = new AbortController()
+    const timer = window.setTimeout(async () => {
+      const query = new URLSearchParams({ time: String(previewTime), width: String(exportSettings.width), height: String(exportSettings.height), scoreZoom: String(exportSettings.scoreZoom) })
+      try {
+        const response = await fetch(`${API}/api/projects/${project.projectId}/preview?${query}`, { signal: controller.signal })
+        if (!response.ok) return
+        const nextUrl = URL.createObjectURL(await response.blob())
+        if (controller.signal.aborted) { URL.revokeObjectURL(nextUrl); return }
+        if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
+        previewUrlRef.current = nextUrl; setPreviewUrl(nextUrl)
+      } catch { /* the preview will retry when settings change */ }
+    }, 180)
+    return () => { window.clearTimeout(timer); controller.abort() }
+  }, [exportOpen, project.projectId, previewTime, exportSettings.width, exportSettings.height, exportSettings.scoreZoom])
+
+  const flash = (text: string) => { setMessage(text); window.setTimeout(() => setMessage(''), 2400) }
+  const updateSegment = (id: string, patch: Partial<Segment>) => setProject(p => ({ ...p, segments: p.segments.map(s => s.id === id ? { ...s, ...patch } : s) }))
+  const onPdf = async (file?: File) => {
+    if (!file) return
+    const form = new FormData(); form.append('file', file)
+    try {
+      const response = await fetch(`${API}/api/import/pdf`, { method: 'POST', body: form })
+      if (!response.ok) throw new Error((await response.json()).detail || 'PDF 导入失败')
+      const data = await response.json()
+      const pages: ScorePage[] = data.pages.map((p: any, i: number) => ({ id: `page-${String(i + 1).padStart(3, '0')}`, image: p.image, width: p.width, height: p.height }))
+      setProject(p => ({ ...p, projectId: data.projectId, projectName: data.filename.replace(/\.pdf$/i, ''), source: { ...p.source, pdf: data.filename }, pages, segments: [], flags: [] })); setActivePage(0); setSelected(null); setTool('row'); flash(`已导入 ${pages.length} 页 PDF`)
+    } catch (error) { flash(error instanceof Error ? error.message : '无法连接渲染服务，请先启动后端') }
+  }
+  const onAudio = async (file?: File) => {
+    if (!file) return
+    if (audioUrl) URL.revokeObjectURL(audioUrl)
+    const url = URL.createObjectURL(file); setAudioUrl(url)
+    setProject(p => ({ ...p, source: { ...p.source, audio: file.name, audioUrl: null }, audioDuration: null }))
+    try { const body = new FormData(); body.append('file', file); const response = await fetch(`${API}/api/import/audio`, { method: 'POST', body }); if (response.ok) { const data = await response.json(); setProject(p => ({ ...p, source: { ...p.source, audioUrl: data.url }, audioDuration: data.duration || p.audioDuration })) } } catch { /* browser playback still works locally */ }
+    if (audioRef.current) { audioRef.current.src = url; audioRef.current.load() }
+    flash('音频已载入，可以开始播放')
+  }
+  const togglePlay = () => { const el = audioRef.current; if (!el) { flash('请先导入 MP3 音频'); return }; if (el.paused) { void el.play(); setPlaying(true) } else { el.pause(); setPlaying(false) } }
+  const seek = (next: number) => { const el = audioRef.current; if (!el) return; el.currentTime = Math.max(0, Math.min(duration || 0, next)); setTime(el.currentTime) }
+  const addFlag = () => {
+    const at = audioRef.current?.currentTime ?? time
+    const ordered = project.segments
+    const flags = project.flags || []
+    if (!audioRef.current || !project.source.audio) { flash('请先导入音频'); return }
+    if (!ordered.length) { flash('先为乐句放好标注区域'); return }
+    if (flags.length > ordered.length) { flash('所有乐句都已打点完成'); return }
+    if (flags.length && at <= flags[flags.length - 1].time) { flash('新标记需要晚于上一个标记'); return }
+
+    const nextFlags: KaraokeFlag[] = [...flags]
+    const index = flags.length
+    if (index === 0) {
+      const first = ordered[0]
+      nextFlags.push({ id: `flag-${Date.now()}`, time: at, segmentId: first.id, kind: 'start' })
+      setProject(p => ({ ...p, flags: nextFlags, segments: p.segments.map((s, i) => i === 0 ? { ...s, startTime: at, endTime: Math.max(s.endTime, at + .25) } : s) }))
+      setSelected(first.id)
+      const pageIndex = project.pages.findIndex(page => page.id === first.pageId); if (pageIndex >= 0) setActivePage(pageIndex)
+      flash(`已打点 ${formatTime(at)} · 第 1 句开始`)
+      return
+    }
+
+    const previous = ordered[index - 1]
+    if (!previous || at <= previous.startTime) { flash('这个标记早于当前乐句的开始位置'); return }
+    const next = ordered[index]
+    nextFlags.push({ id: `flag-${Date.now()}`, time: at, segmentId: next?.id || previous.id, kind: next ? 'transition' : 'end' })
+    setProject(p => ({
+      ...p,
+      flags: nextFlags,
+      segments: p.segments.map((s, i) => i === index - 1
+        ? { ...s, endTime: at }
+        : i === index ? { ...s, startTime: at, endTime: Math.max(s.endTime, at + .25) } : s),
+    }))
+    if (next) {
+      setSelected(next.id)
+      const pageIndex = project.pages.findIndex(page => page.id === next.pageId); if (pageIndex >= 0) setActivePage(pageIndex)
+      flash(`已打点 ${formatTime(at)} · 第 ${index + 1} 句开始`)
+    } else flash(`已打点 ${formatTime(at)} · 最后一句结束`)
+  }
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (resetOpen || autoCandidates || boxCandidates) { if (event.key === 'Escape') { setResetOpen(false); setAutoCandidates(null); setBoxCandidates(null) }; return }
+      const target = event.target as HTMLElement
+      if (target?.matches('input, textarea, select') || target?.isContentEditable) return
+      if (event.code === 'Space') { event.preventDefault(); togglePlay() }
+      if (event.ctrlKey && event.key.toLowerCase() === 'z') { event.preventDefault(); event.shiftKey ? redoProject() : undoProject() }
+      if (event.ctrlKey && event.key.toLowerCase() === 'y') { event.preventDefault(); redoProject() }
+      if (event.key === 'Enter') { event.preventDefault(); addFlag() }
+      if (event.key === 'ArrowLeft') { event.preventDefault(); seek(time - (event.shiftKey ? 1 : .1)) }
+      if (event.key === 'ArrowRight') { event.preventDefault(); seek(time + (event.shiftKey ? 1 : .1)) }
+      if (event.key.toLowerCase() === 'n') setTool('row')
+      if (event.key.toLowerCase() === 'd' && selected) { event.preventDefault(); duplicateBelow() }
+      if (event.key.toLowerCase() === 'a' && selected) setTool(current => current === 'anchor' ? 'select' : 'anchor')
+      if (event.key === 'Delete' && selected && !event.ctrlKey && !event.altKey && !event.metaKey && !event.repeat) {
+        event.preventDefault()
+        setProject(p => ({ ...p, segments: p.segments.filter(s => s.id !== selected), flags: (p.flags || []).filter(flag => flag.segmentId !== selected) }))
+        setSelected(null)
+        setTool('select')
+        flash('标注已删除；可按 Ctrl+Z 撤销')
+      }
+      if (event.key.toLowerCase() === 's' && selected) updateSegment(selected, { startTime: time })
+      if (event.key.toLowerCase() === 'e' && selected) updateSegment(selected, { endTime: time })
+    }
+    window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey)
+  }, [time, selected, duration, project, resetOpen, autoCandidates, boxCandidates])
+
+  function resetAnnotations() {
+    if (audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0 }
+    lastHistoryAt.current = 0
+    setProject(p => ({ ...p, segments: [], flags: [] }))
+    setSelected(null); setActivePage(0); setTime(0); setTool(project.pages.length ? 'row' : 'select')
+    setResetOpen(false)
+    flash('标注已清空，可按 Ctrl+Z 恢复')
+  }
+
+  function createSegment(region: Region) {
+    if (!currentPage) { flash('请先导入 PDF 乐谱'); return }
+    const id = `segment-${Date.now()}`
+    const next: Segment = { id, pageId: currentPage.id, region: fitRegion(region), startTime: time, endTime: Math.min(duration || time + 4, time + 4), direction: 'left-to-right' }
+    setProject(p => ({ ...p, segments: [...p.segments, next] })); setSelected(id); setTool('row')
+  }
+  const duplicateBelow = () => {
+    const source = project.segments.find(s => s.id === selected)
+    if (!source) { flash('先选中一条标注'); return }
+    const id = `segment-${Date.now()}`
+    const startTime = source.endTime; const endTime = startTime + (source.endTime - source.startTime)
+    const anchors = source.anchors?.map(anchor => ({ time: startTime + (anchor.time - source.startTime), progress: anchor.progress }))
+    setProject(p => ({ ...p, segments: [...p.segments, { ...source, id, region: fitRegion({ ...source.region, y: source.region.y + source.region.height + .025 }), startTime, endTime, anchors }] })); setSelected(id)
+  }
+  const addAnchor = (segment: Segment, event: React.PointerEvent<SVGGElement>) => {
+    const now = audioRef.current?.currentTime ?? time
+    if (now <= segment.startTime || now >= segment.endTime) { flash('请在这句的播放时间范围内添加锚点'); return }
+    const pageRect = pageRef.current!.getBoundingClientRect()
+    const progress = Math.max(0, Math.min(1, ((event.clientX - pageRect.left) / pageRect.width - segment.region.x) / segment.region.width))
+    const anchors = [...(segment.anchors || []), { time: now, progress }].sort((a, b) => a.time - b.time)
+    if (anchors.some((anchor, index) => index > 0 && anchor.progress < anchors[index - 1].progress)) { flash('锚点需要按乐谱从左向右添加'); return }
+    updateSegment(segment.id, { anchors }); setTool('select'); flash(`已添加同步锚点 ${formatTime(now)} · ${Math.round(progress * 100)}%`)
+  }
+  const toggleCut = (segment: Segment, event: React.PointerEvent<SVGGElement>) => {
+    const rect = pageRef.current!.getBoundingClientRect()
+    const pageX = (event.clientX - rect.left) / rect.width
+    const position = (pageX - segment.region.x) / segment.region.width
+    if (position <= .02 || position >= .98) { flash('竖线请点在乐句内部'); return }
+    const cuts = segment.cuts || []
+    const tolerance = Math.max(.015, 8 / (rect.width * segment.region.width))
+    const nearby = cuts.findIndex(cut => Math.abs(cut - position) <= tolerance)
+    const next = nearby >= 0 ? cuts.filter((_, index) => index !== nearby) : [...cuts, position].sort((a, b) => a - b)
+    updateSegment(segment.id, { cuts: next }); setSelected(segment.id)
+    flash(nearby >= 0 ? '已删除竖线' : `已添加第 ${next.indexOf(position) + 1} 条竖线`)
+  }
+  const persistProject = async (snapshot: Project) => {
+    localStorage.setItem('pujian-project', JSON.stringify(snapshot))
+    if (snapshot.projectId) {
+      const response = await fetch(`${API}/api/projects/${snapshot.projectId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(snapshot) })
+      if (!response.ok) throw new Error('本地项目保存失败')
+    }
+  }
+  const refreshProjects = async () => {
+    try { const response = await fetch(`${API}/api/projects`); if (response.ok) setProjectList(await response.json()) } catch { setProjectList([]) }
+  }
+  const createProject = async () => {
+    try {
+      const response = await fetch(`${API}/api/projects`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projectName: '未命名歌曲' }) })
+      if (!response.ok) throw new Error('新建项目失败')
+      const next = await response.json() as Project
+      setProject(next); setSelected(null); setActivePage(0); setTime(0); setDuration(0); setProjectMenuOpen(false)
+      if (audioUrl) URL.revokeObjectURL(audioUrl)
+      setAudioUrl(null)
+      if (audioRef.current) { audioRef.current.pause(); audioRef.current.removeAttribute('src'); audioRef.current.load() }
+      undoHistory.current = []; redoHistory.current = []; refreshProjects(); flash('已新建项目')
+    } catch (error) { flash(error instanceof Error ? error.message : '无法新建项目，请确认本地服务已启动') }
+  }
+  const openProject = async (projectId: string) => {
+    try {
+      const response = await fetch(`${API}/api/projects/${projectId}`)
+      if (!response.ok) throw new Error('无法打开这个项目')
+      const next = await response.json() as Project
+      if (audioUrl) URL.revokeObjectURL(audioUrl)
+      setAudioUrl(null); setProject(next); setSelected(null); setActivePage(0); setTime(0); setDuration(0); setTool('select'); setProjectMenuOpen(false)
+      undoHistory.current = []; redoHistory.current = []
+      if (audioRef.current) { audioRef.current.pause(); audioRef.current.removeAttribute('src'); audioRef.current.load() }
+      flash(`已打开「${next.projectName}」`)
+    } catch (error) { flash(error instanceof Error ? error.message : '项目打开失败') }
+  }
+  const saveProject = async () => { setSaving(true); try { await persistProject(project); flash('项目已保存') } catch { flash('项目已保存到此浏览器') } finally { setSaving(false) } }
+  const startAutoBoxes = async () => {
+    if (!project.pages.length || boxBusy) return
+    setBoxBusy(true)
+    try {
+      const response = await fetch(`${API}/api/auto-boxes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pages: project.pages }) })
+      const data = await response.json()
+      if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '自动框选失败')
+      setBoxCandidates(data.candidates || [])
+    } catch (error) { flash(error instanceof Error ? error.message : '自动框选失败') }
+    finally { setBoxBusy(false) }
+  }
+  const applyAutoBoxes = (indices: number[], replace: boolean) => {
+    if (!boxCandidates || !indices.length) return
+    const chosen = indices.map(index => boxCandidates[index]).filter(Boolean)
+    lastHistoryAt.current = 0
+    setProject(previous => {
+      const existing = replace ? [] : previous.segments
+      const used = new Set<string>()
+      const intersects = (a: Region, b: Region) => {
+        const width = Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x))
+        const height = Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y))
+        return width * height / Math.max(.000001, Math.min(a.width * a.height, b.width * b.height))
+      }
+      const ordered = chosen.map((candidate, index): Segment => {
+        const match = existing.find(segment => !used.has(segment.id) && segment.pageId === candidate.pageId && intersects(segment.region, candidate.region) > .45)
+        if (match) { used.add(match.id); return match }
+        return { id: `box-${Date.now()}-${index}`, pageId: candidate.pageId, region: fitRegion(candidate.region), startTime: index * 4, endTime: (index + 1) * 4, direction: 'left-to-right', cuts: [], anchors: [] }
+      })
+      const unmatched = existing.filter(segment => !used.has(segment.id))
+      const segments = !replace && previous.flags?.length
+        ? [...existing, ...ordered.filter(segment => !used.has(segment.id))]
+        : [...ordered, ...unmatched]
+      return { ...previous, segments, flags: replace ? [] : previous.flags }
+    })
+    setBoxCandidates(null); setSelected(null); setTool('select')
+    flash(`已应用 ${chosen.length} 个候选框；新标注时间可用打点校准`)
+  }
+  const startAutoAlign = async () => {
+    if (!project.projectId || !project.pages.length || !project.source.audioUrl) { flash('请先导入 PDF 乐谱和 MP3 音频'); return }
+    if (autoBusy) return
+    setAutoBusy(true); setAutoStage('正在准备自动对齐')
+    const projectId = project.projectId
+    try {
+      await persistProject(project)
+      const response = await fetch(`${API}/api/projects/${projectId}/auto-align`, { method: 'POST' })
+      const started = await response.json()
+      if (!response.ok) throw new Error(typeof started.detail === 'string' ? started.detail : '无法启动自动对齐')
+      for (;;) {
+        await new Promise(resolve => window.setTimeout(resolve, 1200))
+        const statusResponse = await fetch(`${API}/api/alignments/${started.jobId}`)
+        if (!statusResponse.ok) throw new Error('无法读取自动对齐进度')
+        const status = await statusResponse.json()
+        if (projectRef.current.projectId !== projectId) return
+        setAutoStage(status.stage || '正在处理')
+        if (status.status === 'failed') throw new Error(status.error || '自动对齐失败')
+        if (status.status === 'completed') { setAutoCandidates(status.candidates || []); return }
+      }
+    } catch (error) { flash(error instanceof Error ? error.message : '自动对齐失败') }
+    finally { setAutoBusy(false); setAutoStage('') }
+  }
+  const applyAutoCandidates = (indices: number[]) => {
+    if (!autoCandidates) return
+    const chosen = indices.map(index => autoCandidates[index]).filter(Boolean)
+    if (!chosen.length) return
+    lastHistoryAt.current = 0
+    setProject(previous => {
+      const used = new Set<string>()
+      const proposed = chosen.map((candidate, index): Segment => {
+        const cy = candidate.region.y + candidate.region.height / 2
+        const cx = candidate.region.x + candidate.region.width / 2
+        const existing = previous.segments.filter(segment => {
+          if (used.has(segment.id) || segment.pageId !== candidate.pageId) return false
+          const top = Math.max(segment.region.y, candidate.region.y)
+          const bottom = Math.min(segment.region.y + segment.region.height, candidate.region.y + candidate.region.height)
+          const overlap = Math.max(0, bottom - top) / Math.min(segment.region.height, candidate.region.height)
+          return overlap > .28 && segment.region.height <= candidate.region.height * 2 && Math.abs(segment.region.x + segment.region.width / 2 - cx) < .25
+        }).sort((a, b) => Math.abs(a.region.y + a.region.height / 2 - cy) - Math.abs(b.region.y + b.region.height / 2 - cy))[0]
+        if (!existing) return { id: `auto-${Date.now()}-${index}`, pageId: candidate.pageId, region: fitRegion(candidate.region), startTime: candidate.startTime, endTime: candidate.endTime, direction: 'left-to-right', text: candidate.text, cuts: [], anchors: [] }
+        used.add(existing.id)
+        const oldSpan = Math.max(.001, existing.endTime - existing.startTime)
+        const newSpan = candidate.endTime - candidate.startTime
+        const anchors = (existing.anchors || []).map(anchor => ({ progress: anchor.progress, time: Math.max(candidate.startTime, Math.min(candidate.endTime, candidate.startTime + (anchor.time - existing.startTime) / oldSpan * newSpan)) }))
+        return { ...existing, text: candidate.text, startTime: candidate.startTime, endTime: candidate.endTime, anchors }
+      })
+      return { ...previous, segments: [...previous.segments.filter(segment => !used.has(segment.id)), ...proposed].sort((a, b) => a.startTime - b.startTime), flags: [] }
+    })
+    setAutoCandidates(null); setSelected(null); setTool('select')
+    flash(`已应用 ${chosen.length} 条候选；请重点试听待核对的乐句`)
+  }
+  const openExport = async () => {
+    if (!project.projectId) { flash('请先导入并保存一个乐谱项目'); return }
+    const settings = project.export || initialProject.export!
+    setExportSettings(settings); setPreviewTime(time); setExportJob(null); setValidation(null); setExportOpen(true)
+    try {
+      await persistProject({ ...project, export: settings })
+      const response = await fetch(`${API}/api/projects/${project.projectId}/validate`, { method: 'POST' })
+      if (response.ok) setValidation(await response.json())
+    } catch (error) { flash(error instanceof Error ? error.message : '无法读取项目校验结果') }
+  }
+  const startVideoExport = async () => {
+    if (!project.projectId || exportBusy) return
+    setExportBusy(true); setExportJob(null); setValidation(null)
+    const snapshot: Project = { ...project, export: exportSettings }
+    setProject(snapshot)
+    try {
+      await persistProject(snapshot)
+      const reportResponse = await fetch(`${API}/api/projects/${project.projectId}/validate`, { method: 'POST' })
+      const report = await reportResponse.json(); setValidation(report)
+      if (!reportResponse.ok || !report.valid) { setExportBusy(false); return }
+      const response = await fetch(`${API}/api/projects/${project.projectId}/export`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(exportSettings) })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail?.errors?.join('；') || data.detail || '无法开始导出')
+      setExportJob({ ...data, progress: 0 })
+    } catch (error) { setExportBusy(false); flash(error instanceof Error ? error.message : '视频导出启动失败') }
+  }
+  const pointerPosition = (event: React.PointerEvent) => {
+    const rect = pageRef.current!.getBoundingClientRect()
+    return { x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)), y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)) }
+  }
+  const pagePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (tool !== 'row' || !currentPage) return
+    event.preventDefault(); (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
+    const point = pointerPosition(event); draftRef.current = point; setIsDrawing(true)
+    setDraft(fitRegion({ x: point.x, y: point.y, width: .005, height: .016 }))
+  }
+  const pagePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const point = pointerPosition(event)
+    if (isDrawing && draftRef.current) {
+      const origin = draftRef.current
+      setDraft(fitRegion({ x: origin.x, y: origin.y, width: Math.max(.005, point.x - origin.x), height: .016 }))
+    }
+    if (dragRef.current) {
+      const drag = dragRef.current; const rect = pageRef.current!.getBoundingClientRect(); const dx = (event.clientX - drag.startX) / rect.width; const dy = (event.clientY - drag.startY) / rect.height
+      let region = { ...drag.region }
+      if (drag.kind === 'move') region = fitRegion({ ...region, x: region.x + dx, y: region.y + dy })
+      else region = fitRegion({ ...region, width: region.width + dx, height: region.height + dy })
+      updateSegment(drag.id, { region })
+    }
+  }
+  const pagePointerUp = () => {
+    if (isDrawing && draft && tool === 'row') {
+      const region = draft.width > .02 ? draft : fitRegion({ ...draft, width: .8 })
+      createSegment(region)
+      flash('已添加标注；可继续画下一行，或切换到竖切分拍')
+    }
+    setIsDrawing(false); draftRef.current = null; setDraft(null); dragRef.current = null
+  }
+
+  return <div className="app-shell">
+    <header className="topbar">
+      <div className="brand"><div className="brand-mark"><Music2 size={17} strokeWidth={2.4} /></div><span>谱间</span><span className="brand-divider"/><span className="product-label">歌谱同步工作台</span></div>
+      <div className="top-actions"><button className="icon-button" title="撤销（Ctrl+Z）" disabled={!undoHistory.current.length} onClick={undoProject}><Undo2 size={17}/></button><button className="icon-button" title="重做（Ctrl+Shift+Z）" disabled={!redoHistory.current.length} onClick={redoProject}><Redo2 size={17}/></button><span className="top-separator"/><button className="button button-quiet" onClick={saveProject}><Save size={15}/>{saving ? '保存中…' : '保存'}</button><button className="button button-primary" onClick={openExport}><Upload size={15}/>导出视频</button><button className="avatar">林</button></div>
+    </header>
+    <div className="main-layout">
+      <aside className="left-rail">
+        <div className="rail-heading"><div className="project-menu-wrap rail-project-switcher" ref={projectMenuRef}><button className="project-title title-button" aria-expanded={projectMenuOpen} aria-label={`切换项目，当前项目：${project.projectName}`} onClick={() => { const opening = !projectMenuOpen; setProjectMenuOpen(opening); if (opening) void refreshProjects() }}><span className="project-switcher-label">当前项目</span><span className="project-switcher-name">{project.projectName}<ChevronDown size={14}/></span></button>{projectMenuOpen && <div className="project-menu"><button className="project-menu-create" onClick={() => { void createProject() }}><Plus size={15}/>新建项目</button><div className="project-menu-heading">最近项目</div>{projectList.length ? projectList.map(item => <button key={item.projectId} className={`project-menu-item ${item.projectId === project.projectId ? 'current' : ''}`} onClick={() => { if (item.projectId !== project.projectId) void openProject(item.projectId); else setProjectMenuOpen(false) }}><span>{item.projectName}</span><small>{item.pdf || item.audio || '尚未导入文件'}</small></button>) : <div className="project-menu-empty">还没有保存的项目</div>}</div>}</div></div>
+        <button className="rail-project"><div className="file-icon pdf"><FileImage size={17}/></div><div className="file-meta"><strong>{project.source.pdf || '导入乐谱 PDF'}</strong><span>{project.pages.length ? `${project.pages.length} 页 · ${Math.round((currentPage?.width || 0) / 10)} × ${Math.round((currentPage?.height || 0) / 10)} mm` : '尚未添加文件'}</span></div>{project.source.pdf && <Check className="file-check" size={15}/>}</button>
+        <button className="rail-project"><div className="file-icon audio"><FileAudio2 size={17}/></div><div className="file-meta"><strong>{project.source.audio || '导入伴奏音频'}</strong><span>{duration ? `${formatTime(duration)} · MP3 音频` : '尚未添加文件'}</span></div>{project.source.audio && <Check className="file-check" size={15}/>}</button>
+        <button className="upload-row" onClick={() => pdfInput.current?.click()}><Plus size={15}/> 添加 PDF 乐谱</button>
+        <button className="upload-row" onClick={() => audioInput.current?.click()}><Plus size={15}/> 添加 MP3 音频</button>
+        <div className="sidebar-section"><div className="section-heading"><span>分段标注</span><span className="count-pill">{project.segments.length}</span><button className="icon-button tiny" title="添加标注" onClick={() => setTool('row')}><Plus size={15}/></button></div>
+          <div className="segment-nav">
+            {project.segments.length ? project.segments.map((seg, i) => <button key={seg.id} className={`segment-item ${selected === seg.id ? 'selected' : ''}`} onClick={() => { setSelected(seg.id); const idx = project.pages.findIndex(p => p.id === seg.pageId); if (idx >= 0) setActivePage(idx) }}><span className="segment-index">{String(i + 1).padStart(2, '0')}</span><span className="segment-info"><strong title={seg.text || ''}>{seg.text || `乐句 ${String(i + 1).padStart(2, '0')}`}</strong><span>{formatTime(seg.startTime)} — {formatTime(seg.endTime)}</span></span><span className="segment-page">P{project.pages.findIndex(p => p.id === seg.pageId) + 1}</span></button>) : demoRows.map(row => <button key={row[0]} className="segment-item muted-demo" onClick={() => flash('导入乐谱并添加区域后，这里会显示你的分段')}><span className="segment-index">{row[0]}</span><span className="segment-info"><strong>{row[1]}</strong><span>{row[2]} — {row[3]}</span></span><span className="segment-page">P{row[4]}</span></button>)}
+          </div>
+        </div>
+        <div className="sidebar-bottom"><button className="reset-annotations-button" disabled={!project.segments.length && !(project.flags || []).length} onClick={() => setResetOpen(true)}><RotateCcw size={14}/>重新标注</button><button className="help-link" onClick={() => flash('拖动创建标注 · 空格播放 · 方向键微调时间')}><CircleHelp size={16}/> 使用帮助</button><div className="shortcut-tip"><Keyboard size={15}/><span>按 <kbd>Space</kbd> 播放 / 暂停</span></div></div>
+      </aside>
+
+      <main className="workspace">
+        <div className="workspace-toolbar"><div className="breadcrumbs"><span>工作台</span><ChevronRight size={14}/><strong>乐谱标注</strong></div><div className="toolbar-right"><div className="page-count">{project.pages.length ? <><span>第</span><strong>{activePage + 1}</strong><span>/ {project.pages.length} 页</span><button className="page-arrow" disabled={activePage === 0} onClick={() => setActivePage(activePage - 1)}><ChevronLeft size={15}/></button><button className="page-arrow" disabled={activePage >= project.pages.length - 1} onClick={() => setActivePage(activePage + 1)}><ChevronRight size={15}/></button></> : <span>等待导入乐谱</span>}</div><span className="toolbar-sep"/><div className="zoom-control"><button onClick={() => setZoom(z => Math.max(.45, +(z - .1).toFixed(2)))}><ZoomOut size={15}/></button><span>{Math.round(zoom * 100)}%</span><button onClick={() => setZoom(z => Math.min(1.5, +(z + .1).toFixed(2)))}><ZoomIn size={15}/></button></div><button className="icon-button" title="视图设置"><SlidersHorizontal size={16}/></button></div></div>
+        <div className="segmentation-toolbar"><span>切分乐谱</span><button className={`button compact ${tool === 'row' ? 'button-active' : 'button-quiet'}`} title="添加标注（N）" onClick={() => setTool(tool === 'row' ? 'select' : 'row')}><span className="horizontal-line-icon"/>添加标注</button><button className={`button compact ${tool === 'cut' ? 'button-active' : 'button-quiet'}`} onClick={() => setTool(tool === 'cut' ? 'select' : 'cut')}><span className="vertical-line-icon"/>竖切分拍</button><button className="button button-quiet compact" disabled={boxBusy || !project.pages.length} onClick={() => void startAutoBoxes()}>{boxBusy ? <LoaderCircle className="spin" size={13}/> : <WandSparkles size={13}/>} {boxBusy ? '正在框选' : '自动框选'}</button><button className="button button-active compact auto-align-launch" disabled={autoBusy || !project.pages.length || !project.source.audioUrl} onClick={() => void startAutoAlign()}>{autoBusy ? <LoaderCircle className="spin" size={13}/> : <WandSparkles size={13}/>} {autoBusy ? '正在对齐' : '自动对齐'}</button><small>{autoBusy ? autoStage : boxBusy ? '正在查找歌词行和明显留白' : tool === 'row' ? '在歌词行左上角单击，或向右拖出标注宽度' : tool === 'cut' ? '点击行内添加竖线，点击已有竖线可删除' : '自动框选只找位置；自动对齐还会估计音频时间'}</small></div>
+        <div className="canvas-area" ref={canvasRef}>
+          {currentPage ? <div className="page-frame" key={currentPage.id} style={{ width: `min(${Math.round(510 * zoom)}px, 83%)` }}><div ref={pageRef} className={`score-page ${tool === 'row' ? 'drawing' : ''} ${tool === 'anchor' || tool === 'cut' ? 'anchoring' : ''} ${playing ? 'previewing' : ''}`} style={{ aspectRatio: `${currentPage.width} / ${currentPage.height}` }} onPointerDown={pagePointerDown} onPointerMove={pagePointerMove} onPointerUp={pagePointerUp} onPointerCancel={pagePointerUp}>
+              <img src={currentPage.image.startsWith('data:') || currentPage.image.startsWith('blob:') ? currentPage.image : currentPage.image} alt={`乐谱第 ${activePage + 1} 页`} draggable={false}/>
+              <svg className="annotation-layer" viewBox="0 0 1000 1414" preserveAspectRatio="none">
+                <defs>
+                  <filter id="ink-recolor" colorInterpolationFilters="sRGB"><feColorMatrix type="matrix" values="0 0 0 0 .8706  0 0 0 0 .2941  0 0 0 0 .1765  -1.6667 -1.6667 -1.6667 0 4"/></filter>
+                  <clipPath id="ink-reveal"><rect x={(activeSegment?.region.x || 0) * 1000} y={(activeSegment?.region.y || 0) * 1414} width={(activeSegment?.region.width || 0) * progress * 1000} height={(activeSegment?.region.height || 0) * 1414}/></clipPath>
+                </defs>
+                {activeSegment?.pageId === currentPage.id && progress > 0 && <image href={currentPage.image} x="0" y="0" width="1000" height="1414" preserveAspectRatio="none" filter="url(#ink-recolor)" clipPath="url(#ink-reveal)" pointerEvents="none"/>}
+                {project.segments.filter(s => s.pageId === currentPage.id).map(seg => { const r = seg.region; return <g key={seg.id} className={`annotation ${selected === seg.id ? 'is-selected' : ''}`} onPointerDown={e => { if (tool === 'row') return; e.stopPropagation(); if (tool === 'anchor') { addAnchor(seg, e); return }; if (tool === 'cut') { toggleCut(seg, e); return }; setSelected(seg.id); dragRef.current = { id: seg.id, kind: 'move', startX: e.clientX, startY: e.clientY, region: { ...r } }; (e.currentTarget as SVGGElement).setPointerCapture(e.pointerId) }}>
+                  <rect className="region-outline" x={r.x * 1000} y={r.y * 1414} width={r.width * 1000} height={r.height * 1414} rx="4"/>
+                  {(seg.cuts || []).map((cut, index) => <line key={`${seg.id}-cut-${index}`} className="beat-cut" x1={(r.x + r.width * cut) * 1000} x2={(r.x + r.width * cut) * 1000} y1={r.y * 1414} y2={(r.y + r.height) * 1414}><title>第 {index + 1} 拍分界</title></line>)}
+                  {(selected === seg.id || activeSegment?.id === seg.id) && (seg.anchors || []).map(anchor => <g key={`${seg.id}-${anchor.time}`} className="anchor-point"><line x1={(r.x + r.width * anchor.progress) * 1000} x2={(r.x + r.width * anchor.progress) * 1000} y1={r.y * 1414} y2={(r.y + r.height) * 1414}/><circle cx={(r.x + r.width * anchor.progress) * 1000} cy={(r.y + r.height / 2) * 1414} r="7"/><title>{formatTime(anchor.time)}</title></g>)}
+                  <g className="region-number" transform={`translate(${r.x * 1000},${Math.max(2, r.y * 1414 - 29)})`}><rect className="region-number-bg" width="34" height="24" rx="5"/><text className="region-number-text" x="17" y="17" textAnchor="middle">{String(project.segments.indexOf(seg) + 1).padStart(2, '0')}</text></g>
+                  {selected === seg.id && <rect className="resize-handle" x={(r.x + r.width) * 1000 - 8} y={(r.y + r.height) * 1414 - 8} width="16" height="16" rx="3" onPointerDown={e => { e.stopPropagation(); dragRef.current = { id: seg.id, kind: 'resize', startX: e.clientX, startY: e.clientY, region: { ...r } }; (e.currentTarget as SVGRectElement).setPointerCapture(e.pointerId) }}/>} 
+                </g> })}
+                {draft && <rect className="draft-region" x={draft.x * 1000} y={draft.y * 1414} width={draft.width * 1000} height={draft.height * 1414} rx="4"/>}
+              </svg>
+            </div><div className="page-caption"><span>第 {activePage + 1} 页</span><span>{currentPage.width} × {currentPage.height} px · 原始比例标注</span></div></div> : <div className="empty-workspace"><div className="empty-art"><div className="music-note note-a">♪</div><div className="music-note note-b">♫</div><div className="empty-paper"><div className="paper-lines">𝅘𝅥𝅮　1 2 3 5　|　6 — 5 3<br/>　小 星 星　　亮 晶 晶</div><div className="paper-highlight"/></div><div className="upload-orbit"><ImagePlus size={20}/></div></div><div className="empty-copy"><span className="eyebrow">从乐谱开始</span><h1>让每一句歌，都有自己的节奏</h1><p>导入一份简谱 PDF 和伴奏 MP3，逐行标注歌词位置，<br/>再为每段旋律校准准确的播放时间。</p></div><div className="empty-actions"><button className="button button-primary" onClick={() => pdfInput.current?.click()}><FilePlus2 size={16}/>导入 PDF 乐谱</button><button className="button button-secondary" onClick={() => audioInput.current?.click()}><Headphones size={16}/>选择 MP3 音频</button></div><div className="supported-note"><span className="check-mini"><Check size={11}/></span>页面按原始尺寸渲染，标注坐标随缩放保持准确</div></div>}
+        </div>
+        <div className="transport-panel"><div className="transport-left"><button className="play-button" onClick={togglePlay}>{playing ? <Pause size={17} fill="currentColor"/> : <Play size={17} fill="currentColor"/>}</button><button className="flag-button" onClick={addFlag} disabled={!project.segments.length || !project.source.audio} title="记录此刻的音频时间（Enter）"><Flag size={14}/><span>打点</span>{Boolean(project.flags?.length) && <em>{project.flags?.length}</em>}</button><div className="transport-time"><strong>{formatTime(time)}</strong><span>/ {formatTime(duration)}</span></div><div className="transport-divider"/><div className="speed-control"><span>速度</span><select defaultValue="1" onChange={e => { if (audioRef.current) audioRef.current.playbackRate = Number(e.target.value) }}><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1">1.0×</option><option value="1.25">1.25×</option></select><ChevronDown size={12}/></div></div><div className="transport-right"><span className="now-playing-dot"/><span>{activeSegment ? `正在预览 · 乐句 ${String(project.segments.indexOf(activeSegment) + 1).padStart(2, '0')}` : project.source.audio ? '音频已就绪' : '等待导入音频'}</span><button className="icon-button tiny"><Settings2 size={16}/></button></div><div className="transport-progress" onClick={e => { const rect = e.currentTarget.getBoundingClientRect(); seek((e.clientX - rect.left) / rect.width * duration) }}><div className="transport-progress-fill" style={{ width: `${duration ? time / duration * 100 : 0}%` }}/>{(project.flags || []).map(flag => <button key={flag.id} className="flag-tick" style={{ left: `${duration ? flag.time / duration * 100 : 0}%` }} title={`打点 ${formatTime(flag.time)}`} onClick={e => { e.stopPropagation(); seek(flag.time) }} />)}<div className="transport-progress-knob" style={{ left: `${duration ? time / duration * 100 : 0}%` }}/></div></div>
+        <TimelinePanel audioUrl={project.source.audioUrl} audioName={project.source.audio} duration={duration || project.audioDuration || 0} segments={project.segments} selected={selected} time={time} onSelect={setSelected} onSeek={seek} onDuplicate={duplicateBelow}/>
+      </main>
+      <aside className="right-panel"><div className="right-panel-title"><div><span className="eyebrow">检查器</span><h2>标注属性</h2></div><button className="icon-button"><MoreHorizontal size={17}/></button></div>{selected && project.segments.some(s => s.id === selected) ? (() => { const seg = project.segments.find(s => s.id === selected)!; return <><div className="inspector-card"><div className="inspector-segment-title"><div className="segment-color-dot"/><div><strong>乐句 {String(project.segments.indexOf(seg) + 1).padStart(2, '0')}</strong><span>页面 {project.pages.findIndex(p => p.id === seg.pageId) + 1} · 左至右</span></div><button className="icon-button tiny" onClick={() => { setProject(p => ({ ...p, segments: p.segments.filter(s => s.id !== selected) })); setSelected(null) }}><X size={15}/></button></div><label className="field-label">开始时间</label><div className="time-input"><Clock3 size={14}/><input value={formatTime(seg.startTime)} onChange={e => { const v = e.target.value.split(':').reduce((a, b) => a * 60 + Number(b), 0); if (Number.isFinite(v)) updateSegment(seg.id, { startTime: v }) }}/><button onClick={() => updateSegment(seg.id, { startTime: time })}>设为当前</button></div><label className="field-label">结束时间</label><div className="time-input"><Clock3 size={14}/><input value={formatTime(seg.endTime)} onChange={e => { const v = e.target.value.split(':').reduce((a, b) => a * 60 + Number(b), 0); if (Number.isFinite(v)) updateSegment(seg.id, { endTime: v }) }}/><button onClick={() => updateSegment(seg.id, { endTime: time })}>设为当前</button></div><div className="field-divider"/><div className="field-heading"><span>区域位置</span><span>页面相对坐标</span></div><div className="coordinate-grid">{(['x', 'y', 'width', 'height'] as const).map(k => <label key={k}><span>{{x:'X 位置', y:'Y 位置', width:'宽度', height:'高度'}[k]}</span><div><input type="number" min="0" max="1" step="0.01" value={seg.region[k].toFixed(2)} onChange={e => updateSegment(seg.id, { region: fitRegion({ ...seg.region, [k]: Number(e.target.value) }) })}/><em>%</em></div></label>)}</div><div className="field-divider"/><div className="highlight-setting"><div><strong>高亮样式</strong><span>橘红色文字 · 无底色</span></div><div className="yellow-swatch"/></div><div className="inspector-actions"><button className="button button-secondary full" onClick={duplicateBelow}><Scissors size={14}/>复制到下一行</button><button className="button button-danger-quiet" onClick={() => { setProject(p => ({ ...p, segments: p.segments.filter(s => s.id !== selected) })); setSelected(null) }}>删除标注</button></div></div></> })() : <div className="inspector-empty"><div className="inspector-empty-icon"><WandSparkles size={19}/></div><strong>选择一条标注</strong><p>选中乐谱上的标注区域，<br/>即可调整时间与位置。</p><div className="inspector-hint"><Sparkles size={14}/><span>支持拖动区域，或精确输入页面相对坐标</span></div></div>}
+        {selected && project.segments.some(s => s.id === selected) && <button className={`button ${tool === 'anchor' ? 'button-active' : 'button-secondary'} full anchor-mode-button`} onClick={() => setTool(tool === 'anchor' ? 'select' : 'anchor')}><Flag size={13}/>{tool === 'anchor' ? '点击乐句中的字词位置' : `添加同步锚点${project.segments.find(s => s.id === selected)?.anchors?.length ? ` · ${project.segments.find(s => s.id === selected)?.anchors?.length}` : ''}（A）`}</button>}
+        {selected && project.segments.some(s => s.id === selected) && <div className="cut-info">竖线 {project.segments.find(s => s.id === selected)?.cuts?.length || 0} 条 · 默认将乐句时间均分给各拍；手动同步锚点优先。</div>}
+        <div className="inspector-bottom"><div className="tip-card"><div className="tip-icon"><Radio size={15}/></div><div><strong>连续打点</strong><p>播放到第一句开唱时按 <kbd>Enter</kbd>；<br/>每次换句再按一次，最后一句结束<br/>时再打一次收尾。</p></div></div><button className="help-link" onClick={() => flash('播放时点击传输栏的「打点」，或按 Enter 记录此刻时间。')}><CircleHelp size={15}/> 标注小贴士</button></div>
+      </aside>
+    </div>
+    {resetOpen && <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget) setResetOpen(false) }}><div className="reset-dialog" role="dialog" aria-modal="true" aria-labelledby="reset-title" aria-describedby="reset-description"><div className="reset-dialog-icon"><RotateCcw size={20}/></div><h2 id="reset-title">重新标注这首歌？</h2><p id="reset-description">将清空 {project.segments.length} 条乐句标注和 {(project.flags || []).length} 个打点。乐谱与音频会保留。</p><div className="reset-dialog-actions"><button className="button button-secondary" autoFocus onClick={() => setResetOpen(false)}>取消</button><button className="button reset-confirm-button" onClick={resetAnnotations}>清空标注</button></div><small>清空后可立即按 Ctrl+Z 恢复。</small></div></div>}
+    {autoCandidates && <AutoAlignDialog candidates={autoCandidates} existingCount={project.segments.length} playing={playing} onClose={() => setAutoCandidates(null)} onListen={at => { seek(at); const audio = audioRef.current; if (audio) { void audio.play(); setPlaying(true) } }} onPause={() => { audioRef.current?.pause(); setPlaying(false) }} onApply={applyAutoCandidates}/>}
+    {boxCandidates && <AutoBoxDialog pages={project.pages} candidates={boxCandidates} existingCount={project.segments.length} onClose={() => setBoxCandidates(null)} onApply={applyAutoBoxes}/>}
+    <input ref={pdfInput} type="file" accept="application/pdf,.pdf" hidden onChange={e => { void onPdf(e.target.files?.[0]); e.currentTarget.value = '' }}/><input ref={audioInput} type="file" accept="audio/mpeg,audio/mp3,.mp3,audio/*" hidden onChange={e => { void onAudio(e.target.files?.[0]); e.currentTarget.value = '' }}/><audio ref={audioRef} onLoadedMetadata={e => { const next = e.currentTarget.duration; setDuration(next); setProject(p => ({ ...p, audioDuration: next })) }} onTimeUpdate={e => setTime(e.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)}/>{message && <div className="toast"><Check size={15}/>{message}</div>}
+    {exportOpen && <ExportDialog settings={exportSettings} previewUrl={previewUrl} previewTime={previewTime} duration={duration || project.audioDuration || 0} validation={validation} job={exportJob} busy={exportBusy} onSettings={settings => setExportSettings(settings)} onPreviewTime={setPreviewTime} onExport={() => { void startVideoExport() }} onClose={() => setExportOpen(false)}/>}
+  </div>
+}
+
+export default App
