@@ -13,5 +13,6 @@ backend/exports/*
 *.tsbuildinfo
 reference/*.json
 reference/JumpingBarSetup.rar
+reference/JumpingBar-参考记录.md
 reference/help-extracted.txt
 reference/sample-project-decoded.txt
