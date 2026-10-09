@@ -1,4 +1,4 @@
-import type { Segment } from './types'
+import type { Project, Segment } from './types'
 
 export function formatTime(seconds: number) {
   const safe = Math.max(0, seconds || 0)
@@ -28,13 +28,27 @@ export function calculateKaraokeProgress(start: number, end: number, anchors: { 
   return 0
 }
 
-export function segmentTimingAnchors(segment: Pick<Segment, 'startTime' | 'endTime' | 'anchors' | 'cuts'>) {
-  if (segment.anchors?.length) return segment.anchors
-  const cuts = [...(segment.cuts || [])].sort((a, b) => a - b)
-  return cuts.map((progress, index) => ({
-    time: segment.startTime + (segment.endTime - segment.startTime) * (index + 1) / (cuts.length + 1),
-    progress,
-  }))
+export function migrateLegacyCuts(project: Project): Project {
+  let hadCuts = false
+  const segments = project.segments.flatMap(segment => {
+    const legacy = segment as Segment & { cuts?: number[]; anchors?: { time: number; progress: number }[] }
+    const cuts = [...new Set((legacy.cuts || []).filter(cut => cut > 0 && cut < 1))].sort((a, b) => a - b)
+    const { cuts: _cuts, anchors: _anchors, ...base } = legacy
+    if (!cuts.length) return [base]
+    hadCuts = true
+    const edges = [0, ...cuts, 1]
+    return edges.slice(0, -1).map((from, index): Segment => {
+      const to = edges[index + 1]
+      return {
+        ...base,
+        id: index ? `${segment.id}-part-${index + 1}` : segment.id,
+        region: { ...segment.region, x: segment.region.x + segment.region.width * from, width: segment.region.width * (to - from) },
+        startTime: segment.startTime + (segment.endTime - segment.startTime) * from,
+        endTime: segment.startTime + (segment.endTime - segment.startTime) * to,
+      }
+    })
+  })
+  return { ...project, segments, flags: hadCuts ? [] : project.flags }
 }
 
 export function calculateCameraTarget(centerY: number, pageHeight: number, viewportHeight: number, currentY: number, safeZone = 0.58) {

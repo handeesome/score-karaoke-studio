@@ -16,11 +16,6 @@ class NormalizedRegion(BaseModel):
         return self
 
 
-class SyncAnchor(BaseModel):
-    time: float = Field(ge=0)
-    progress: float = Field(ge=0, le=1)
-
-
 class ProjectSegment(BaseModel):
     id: str
     pageId: str
@@ -29,21 +24,10 @@ class ProjectSegment(BaseModel):
     endTime: float = Field(gt=0)
     direction: str = "left-to-right"
     text: str | None = None
-    anchors: list[SyncAnchor] = []
-    cuts: list[float] = []
-
     @model_validator(mode="after")
     def valid_times(self):
         if self.startTime >= self.endTime:
             raise ValueError("片段结束时间必须晚于开始时间")
-        if any(anchor.time < self.startTime or anchor.time > self.endTime for anchor in self.anchors):
-            raise ValueError("同步锚点必须位于片段起止时间内")
-        if self.anchors != sorted(self.anchors, key=lambda anchor: anchor.time):
-            raise ValueError("同步锚点必须按时间排序")
-        if self.anchors != sorted(self.anchors, key=lambda anchor: anchor.progress):
-            raise ValueError("同步锚点进度必须从左向右递增")
-        if any(cut <= 0 or cut >= 1 for cut in self.cuts) or self.cuts != sorted(set(self.cuts)):
-            raise ValueError("竖切线必须位于乐句内部，且从左到右排列")
         return self
 
 

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from .scrolling import calculate_camera_target, calculate_progress, ease_in_out, segment_timing_anchors
+from .scrolling import calculate_camera_target, calculate_progress, ease_in_out
 
 BG = (246, 245, 239)
 INK_HIGHLIGHT = (222, 75, 45)
@@ -111,7 +111,7 @@ def _draw_one(project: dict, at: float, width: int, height: int, zoom: float, sa
     frame.paste(image, (x_offset, page_y))
 
     if segment and show_highlight:
-        progress = calculate_progress(float(segment["startTime"]), float(segment["endTime"]), segment_timing_anchors(segment), at)
+        progress = calculate_progress(float(segment["startTime"]), float(segment["endTime"]), [], at)
         region = segment["region"]
         left = max(0, round(float(region["x"]) * image.width))
         top = max(0, round(float(region["y"]) * image.height))

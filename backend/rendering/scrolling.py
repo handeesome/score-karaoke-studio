@@ -24,19 +24,6 @@ def calculate_progress(start: float, end: float, anchors: list[dict], at: float)
     return 0.0
 
 
-def segment_timing_anchors(segment: dict) -> list[dict]:
-    """Evenly time cells between cuts unless manual sync anchors exist."""
-    anchors = segment.get("anchors") or []
-    if anchors:
-        return anchors
-    cuts = sorted(float(cut) for cut in (segment.get("cuts") or []))
-    start, end = float(segment["startTime"]), float(segment["endTime"])
-    return [
-        {"time": start + (end - start) * (index + 1) / (len(cuts) + 1), "progress": cut}
-        for index, cut in enumerate(cuts)
-    ]
-
-
 def calculate_camera_target(
     active_center_y: float,
     page_height: float,

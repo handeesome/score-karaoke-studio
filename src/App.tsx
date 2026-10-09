@@ -1,21 +1,21 @@
 import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
-import { AlertTriangle, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Clock3, FileAudio2, FileImage, FilePlus2, FileVideo2, Flag, Headphones, ImagePlus, LoaderCircle, MoreHorizontal, Music2, Pause, Play, Radio, Redo2, RotateCcw, Scissors, Settings2, SlidersHorizontal, Sparkles, Undo2, Upload, WandSparkles, X, ZoomIn, ZoomOut } from 'lucide-react'
+import { AlertTriangle, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Clock3, FileAudio2, FileImage, FileVideo2, Flag, ImagePlus, LoaderCircle, MoreHorizontal, Music2, Pause, Play, Radio, Redo2, RotateCcw, Scissors, Settings2, Sparkles, Undo2, Upload, WandSparkles, X, ZoomIn, ZoomOut } from 'lucide-react'
 import type { AutoBoxCandidate, AutoCandidate, ExportSettings, KaraokeFlag, Project, Region, ScorePage, Segment } from './types'
 import ExportDialog from './components/ExportDialog'
 import AutoAlignDialog from './components/AutoAlignDialog'
 import TimelinePanel from './components/TimelinePanel'
 import AutoBoxDialog from './components/AutoBoxDialog'
 import { initialProject } from './types'
-import { calculateCameraTarget, calculateKaraokeProgress, fitRegion, formatTime, segmentTimingAnchors } from './utils'
+import { calculateCameraTarget, calculateKaraokeProgress, fitRegion, formatTime, migrateLegacyCuts } from './utils'
 
 const API = ''
 function App() {
   const [project, setProjectState] = useState<Project>(() => {
-    try { return { ...initialProject, ...JSON.parse(localStorage.getItem('pujian-project') || '{}') } } catch { return initialProject }
+    try { return migrateLegacyCuts({ ...initialProject, ...JSON.parse(localStorage.getItem('pujian-project') || '{}') }) } catch { return initialProject }
   })
   const [activePage, setActivePage] = useState(0)
   const [selected, setSelected] = useState<string | null>(null)
-  const [zoom, setZoom] = useState(0.9)
+  const [zoom, setZoom] = useState<number | null>(null)
   const [duration, setDuration] = useState(0)
   const [time, setTime] = useState(0)
   const [playing, setPlaying] = useState(false)
@@ -33,7 +33,7 @@ function App() {
   const [autoCandidates, setAutoCandidates] = useState<AutoCandidate[] | null>(null)
   const [boxCandidates, setBoxCandidates] = useState<AutoBoxCandidate[] | null>(null)
   const [boxBusy, setBoxBusy] = useState(false)
-  const [tool, setTool] = useState<'select' | 'anchor' | 'row' | 'cut'>('select')
+  const [tool, setTool] = useState<'select' | 'row' | 'cut'>('select')
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
   const pdfInput = useRef<HTMLInputElement>(null)
@@ -41,7 +41,7 @@ function App() {
   const canvasRef = useRef<HTMLDivElement>(null)
   const pageRef = useRef<HTMLDivElement>(null)
   const previewUrlRef = useRef<string | null>(null)
-  const dragRef = useRef<{ id: string; kind: 'move' | 'resize'; startX: number; startY: number; region: Region; historySaved?: boolean } | null>(null)
+  const dragRef = useRef<{ id: string; kind: 'move' | 'resize'; edge?: string; startX: number; startY: number; region: Region; historySaved?: boolean } | null>(null)
   const draftRef = useRef<{ x: number; y: number } | null>(null)
   const [draft, setDraft] = useState<Region | null>(null)
   const [isDrawing, setIsDrawing] = useState(false)
@@ -97,7 +97,12 @@ function App() {
   useEffect(() => { if (!audioUrl && project.source.audioUrl && audioRef.current) audioRef.current.src = project.source.audioUrl }, [project.source.audioUrl, audioUrl])
   const currentPage: ScorePage | undefined = project.pages[activePage]
   const activeSegment = useMemo(() => project.segments.find(s => s.startTime <= time && s.endTime >= time), [project.segments, time])
-  const progress = activeSegment ? calculateKaraokeProgress(activeSegment.startTime, activeSegment.endTime, segmentTimingAnchors(activeSegment), time) : 0
+  const progress = activeSegment ? calculateKaraokeProgress(activeSegment.startTime, activeSegment.endTime, [], time) : 0
+  const fileName = (name: string | null) => name ? name.replace(/\.[^.]+$/, '') : null
+  const changeZoom = (step: number) => setZoom(current => {
+    const automatic = (canvasRef.current?.clientWidth || window.innerWidth * .7) * .58 / 510
+    return Math.max(.45, Math.min(2.5, +((current ?? automatic) + step).toFixed(2)))
+  })
 
   useEffect(() => {
     if (!playing || !activeSegment || !canvasRef.current) return
@@ -156,6 +161,12 @@ function App() {
 
   const flash = (text: string) => { setMessage(text); window.setTimeout(() => setMessage(''), 2400) }
   const updateSegment = (id: string, patch: Partial<Segment>) => setProject(p => ({ ...p, segments: p.segments.map(s => s.id === id ? { ...s, ...patch } : s) }))
+  const deleteSegment = (id: string) => {
+    const hadFlags = Boolean(project.flags?.length)
+    setProject(p => ({ ...p, segments: p.segments.filter(s => s.id !== id), flags: hadFlags ? [] : p.flags }))
+    setSelected(null); setTool('select')
+    flash(hadFlags ? '标注已删除，旧打点已清空；可按 Ctrl+Z 撤销' : '标注已删除；可按 Ctrl+Z 撤销')
+  }
   const onPdf = async (file?: File) => {
     if (!file) return
     const replacing = Boolean(project.source.pdf)
@@ -183,7 +194,7 @@ function App() {
       const url = URL.createObjectURL(file)
       audioRef.current?.pause()
       setAudioUrl(url)
-      setProject(p => ({ ...p, source: { ...p.source, audio: file.name, audioUrl: data.url }, audioDuration: data.duration || null, flags: [], segments: p.segments.map((segment, index) => ({ ...segment, startTime: index * 4, endTime: (index + 1) * 4, anchors: [] })) }))
+      setProject(p => ({ ...p, source: { ...p.source, audio: file.name, audioUrl: data.url }, audioDuration: data.duration || null, flags: [], segments: p.segments.map((segment, index) => ({ ...segment, startTime: index * 4, endTime: (index + 1) * 4 })) }))
       setSelected(null); setTime(0); setDuration(data.duration || 0); setPlaying(false)
       if (audioRef.current) { audioRef.current.src = url; audioRef.current.load() }
       flash(replacing ? '已替换音频，请重新打点校准时间' : '音频已载入，可以开始播放')
@@ -243,13 +254,9 @@ function App() {
       if (event.key === 'ArrowRight') { event.preventDefault(); seek(time + (event.shiftKey ? 1 : .1)) }
       if (event.key.toLowerCase() === 'n') setTool('row')
       if (event.key.toLowerCase() === 'd' && selected) { event.preventDefault(); duplicateBelow() }
-      if (event.key.toLowerCase() === 'a' && selected) setTool(current => current === 'anchor' ? 'select' : 'anchor')
       if (event.key === 'Delete' && selected && !event.ctrlKey && !event.altKey && !event.metaKey && !event.repeat) {
         event.preventDefault()
-        setProject(p => ({ ...p, segments: p.segments.filter(s => s.id !== selected), flags: (p.flags || []).filter(flag => flag.segmentId !== selected) }))
-        setSelected(null)
-        setTool('select')
-        flash('标注已删除；可按 Ctrl+Z 撤销')
+        deleteSegment(selected)
       }
       if (event.key.toLowerCase() === 's' && selected) updateSegment(selected, { startTime: time })
       if (event.key.toLowerCase() === 'e' && selected) updateSegment(selected, { endTime: time })
@@ -277,29 +284,29 @@ function App() {
     if (!source) { flash('先选中一条标注'); return }
     const id = `segment-${Date.now()}`
     const startTime = source.endTime; const endTime = startTime + (source.endTime - source.startTime)
-    const anchors = source.anchors?.map(anchor => ({ time: startTime + (anchor.time - source.startTime), progress: anchor.progress }))
-    setProject(p => ({ ...p, segments: [...p.segments, { ...source, id, region: fitRegion({ ...source.region, y: source.region.y + source.region.height + .025 }), startTime, endTime, anchors }] })); setSelected(id)
+    setProject(p => ({ ...p, segments: [...p.segments, { ...source, id, region: fitRegion({ ...source.region, y: source.region.y + source.region.height + .025 }), startTime, endTime }] })); setSelected(id)
   }
-  const addAnchor = (segment: Segment, event: React.PointerEvent<SVGGElement>) => {
-    const now = audioRef.current?.currentTime ?? time
-    if (now <= segment.startTime || now >= segment.endTime) { flash('请在这句的播放时间范围内添加锚点'); return }
-    const pageRect = pageRef.current!.getBoundingClientRect()
-    const progress = Math.max(0, Math.min(1, ((event.clientX - pageRect.left) / pageRect.width - segment.region.x) / segment.region.width))
-    const anchors = [...(segment.anchors || []), { time: now, progress }].sort((a, b) => a.time - b.time)
-    if (anchors.some((anchor, index) => index > 0 && anchor.progress < anchors[index - 1].progress)) { flash('锚点需要按乐谱从左向右添加'); return }
-    updateSegment(segment.id, { anchors }); setTool('select'); flash(`已添加同步锚点 ${formatTime(now)} · ${Math.round(progress * 100)}%`)
-  }
-  const toggleCut = (segment: Segment, event: React.PointerEvent<SVGGElement>) => {
+  const splitSegment = (segment: Segment, event: React.PointerEvent<SVGGElement>) => {
     const rect = pageRef.current!.getBoundingClientRect()
     const pageX = (event.clientX - rect.left) / rect.width
     const position = (pageX - segment.region.x) / segment.region.width
-    if (position <= .02 || position >= .98) { flash('竖线请点在乐句内部'); return }
-    const cuts = segment.cuts || []
-    const tolerance = Math.max(.015, 8 / (rect.width * segment.region.width))
-    const nearby = cuts.findIndex(cut => Math.abs(cut - position) <= tolerance)
-    const next = nearby >= 0 ? cuts.filter((_, index) => index !== nearby) : [...cuts, position].sort((a, b) => a - b)
-    updateSegment(segment.id, { cuts: next }); setSelected(segment.id)
-    flash(nearby >= 0 ? '已删除竖线' : `已添加第 ${next.indexOf(position) + 1} 条竖线`)
+    const minimum = Math.max(.03, 12 / (rect.width * segment.region.width))
+    if (position <= minimum || position >= 1 - minimum) { flash('请点在框内，离左右边缘稍远一些'); return }
+    const rightId = `segment-${Date.now()}-${Math.round(pageX * 1000)}`
+    setProject(previous => {
+      const index = previous.segments.findIndex(item => item.id === segment.id)
+      if (index < 0) return previous
+      const source = previous.segments[index]
+      const boundary = source.region.x + source.region.width * position
+      const provisionalTime = source.startTime + (source.endTime - source.startTime) * position
+      const left: Segment = { ...source, region: { ...source.region, width: boundary - source.region.x }, endTime: provisionalTime, text: undefined }
+      const right: Segment = { ...source, id: rightId, region: { ...source.region, x: boundary, width: source.region.x + source.region.width - boundary }, startTime: provisionalTime, text: undefined }
+      const segments = [...previous.segments]
+      segments.splice(index, 1, left, right)
+      return { ...previous, segments, flags: previous.flags?.length ? [] : previous.flags }
+    })
+    setSelected(rightId)
+    flash(project.flags?.length ? '已分成两个独立标注；旧打点已清空，请重新校准时间' : '已分成两个独立标注，可继续竖切或单独调整时间')
   }
   const persistProject = async (snapshot: Project) => {
     localStorage.setItem('pujian-project', JSON.stringify(snapshot))
@@ -334,7 +341,7 @@ function App() {
       const ordered = chosen.map((candidate, index): Segment => {
         const match = existing.find(segment => !used.has(segment.id) && segment.pageId === candidate.pageId && intersects(segment.region, candidate.region) > .45)
         if (match) { used.add(match.id); return match }
-        return { id: `box-${Date.now()}-${index}`, pageId: candidate.pageId, region: fitRegion(candidate.region), startTime: index * 4, endTime: (index + 1) * 4, direction: 'left-to-right', cuts: [], anchors: [] }
+        return { id: `box-${Date.now()}-${index}`, pageId: candidate.pageId, region: fitRegion(candidate.region), startTime: index * 4, endTime: (index + 1) * 4, direction: 'left-to-right' }
       })
       const unmatched = existing.filter(segment => !used.has(segment.id))
       const segments = !replace && previous.flags?.length
@@ -385,12 +392,9 @@ function App() {
           const overlap = Math.max(0, bottom - top) / Math.min(segment.region.height, candidate.region.height)
           return overlap > .28 && segment.region.height <= candidate.region.height * 2 && Math.abs(segment.region.x + segment.region.width / 2 - cx) < .25
         }).sort((a, b) => Math.abs(a.region.y + a.region.height / 2 - cy) - Math.abs(b.region.y + b.region.height / 2 - cy))[0]
-        if (!existing) return { id: `auto-${Date.now()}-${index}`, pageId: candidate.pageId, region: fitRegion(candidate.region), startTime: candidate.startTime, endTime: candidate.endTime, direction: 'left-to-right', text: candidate.text, cuts: [], anchors: [] }
+        if (!existing) return { id: `auto-${Date.now()}-${index}`, pageId: candidate.pageId, region: fitRegion(candidate.region), startTime: candidate.startTime, endTime: candidate.endTime, direction: 'left-to-right', text: candidate.text }
         used.add(existing.id)
-        const oldSpan = Math.max(.001, existing.endTime - existing.startTime)
-        const newSpan = candidate.endTime - candidate.startTime
-        const anchors = (existing.anchors || []).map(anchor => ({ progress: anchor.progress, time: Math.max(candidate.startTime, Math.min(candidate.endTime, candidate.startTime + (anchor.time - existing.startTime) / oldSpan * newSpan)) }))
-        return { ...existing, text: candidate.text, startTime: candidate.startTime, endTime: candidate.endTime, anchors }
+        return { ...existing, text: candidate.text, startTime: candidate.startTime, endTime: candidate.endTime }
       })
       return { ...previous, segments: [...previous.segments.filter(segment => !used.has(segment.id)), ...proposed].sort((a, b) => a.startTime - b.startTime), flags: [] }
     })
@@ -442,8 +446,20 @@ function App() {
     if (dragRef.current) {
       const drag = dragRef.current; const rect = pageRef.current!.getBoundingClientRect(); const dx = (event.clientX - drag.startX) / rect.width; const dy = (event.clientY - drag.startY) / rect.height
       let region = { ...drag.region }
-      if (drag.kind === 'move') region = fitRegion({ ...region, x: region.x + dx, y: region.y + dy })
-      else region = fitRegion({ ...region, width: region.width + dx, height: region.height + dy })
+      if (drag.kind === 'move') {
+        region.x = Math.max(0, Math.min(1 - region.width, region.x + dx))
+        region.y = Math.max(0, Math.min(1 - region.height, region.y + dy))
+      } else {
+        const edge = drag.edge || 'se'
+        const minimum = .005
+        let left = region.x; let top = region.y
+        let right = left + region.width; let bottom = top + region.height
+        if (edge.includes('w')) left = Math.max(0, Math.min(right - minimum, left + dx))
+        if (edge.includes('e')) right = Math.min(1, Math.max(left + minimum, right + dx))
+        if (edge.includes('n')) top = Math.max(0, Math.min(bottom - minimum, top + dy))
+        if (edge.includes('s')) bottom = Math.min(1, Math.max(top + minimum, bottom + dy))
+        region = { x: left, y: top, width: right - left, height: bottom - top }
+      }
       updateSegment(drag.id, { region })
     }
   }
@@ -451,7 +467,7 @@ function App() {
     if (isDrawing && draft && tool === 'row') {
       const region = draft.width > .02 ? draft : fitRegion({ ...draft, width: .8 })
       createSegment(region)
-      flash('已添加标注；可继续画下一行，或切换到竖切分拍')
+      flash('已添加标注；可继续画下一行，或用竖切把一行分成多个框')
     }
     setIsDrawing(false); draftRef.current = null; setDraft(null); dragRef.current = null
   }
@@ -462,18 +478,11 @@ function App() {
       <div className="top-actions"><button className="icon-button" title="撤销（Ctrl+Z）" disabled={!undoHistory.current.length} onClick={undoProject}><Undo2 size={17}/></button><button className="icon-button" title="重做（Ctrl+Shift+Z）" disabled={!redoHistory.current.length} onClick={redoProject}><Redo2 size={17}/></button><span className="top-separator"/><button className="button button-primary" onClick={openExport}><Upload size={15}/>导出视频</button></div>
     </header>
     <div className="main-layout">
-      <aside className="left-rail">
-        <div className="rail-heading"><div><span className="eyebrow">当前歌曲</span><strong>乐谱与音频</strong></div></div>
-        <button className="rail-project" title={project.source.pdf ? '替换乐谱 PDF' : '选择乐谱 PDF'} onClick={() => pdfInput.current?.click()}><div className="file-icon pdf"><FileImage size={17}/></div><div className="file-meta"><strong>{project.source.pdf || '选择乐谱 PDF'}</strong><span>{project.pages.length ? `${project.pages.length} 页 · ${Math.round((currentPage?.width || 0) / 10)} × ${Math.round((currentPage?.height || 0) / 10)} mm` : '尚未选择'}</span></div><span className="file-action">{project.source.pdf ? '替换' : '选择'}</span></button>
-        <button className="rail-project" title={project.source.audio ? '替换 MP3 音频' : '选择 MP3 音频'} onClick={() => audioInput.current?.click()}><div className="file-icon audio"><FileAudio2 size={17}/></div><div className="file-meta"><strong>{project.source.audio || '选择 MP3 音频'}</strong><span>{duration ? `${formatTime(duration)} · 音频` : '尚未选择'}</span></div><span className="file-action">{project.source.audio ? '替换' : '选择'}</span></button>
-        <div className="sidebar-bottom"><button className="reset-annotations-button" disabled={!project.segments.length && !(project.flags || []).length} onClick={() => setResetOpen(true)}><RotateCcw size={14}/>重新标注</button></div>
-      </aside>
-
       <main className="workspace">
-        <div className="workspace-toolbar"><div className="breadcrumbs"><span>工作台</span><ChevronRight size={14}/><strong>乐谱标注</strong></div><div className="toolbar-right"><div className="page-count">{project.pages.length ? <><span>第</span><strong>{activePage + 1}</strong><span>/ {project.pages.length} 页</span><button className="page-arrow" disabled={activePage === 0} onClick={() => setActivePage(activePage - 1)}><ChevronLeft size={15}/></button><button className="page-arrow" disabled={activePage >= project.pages.length - 1} onClick={() => setActivePage(activePage + 1)}><ChevronRight size={15}/></button></> : <span>等待导入乐谱</span>}</div><span className="toolbar-sep"/><div className="zoom-control"><button onClick={() => setZoom(z => Math.max(.45, +(z - .1).toFixed(2)))}><ZoomOut size={15}/></button><span>{Math.round(zoom * 100)}%</span><button onClick={() => setZoom(z => Math.min(1.5, +(z + .1).toFixed(2)))}><ZoomIn size={15}/></button></div><button className="icon-button" title="视图设置"><SlidersHorizontal size={16}/></button></div></div>
-        <div className="segmentation-toolbar"><span>切分乐谱</span><button className={`button compact ${tool === 'row' ? 'button-active' : 'button-quiet'}`} title="添加标注（N）" onClick={() => setTool(tool === 'row' ? 'select' : 'row')}><span className="horizontal-line-icon"/>添加标注</button><button className={`button compact ${tool === 'cut' ? 'button-active' : 'button-quiet'}`} onClick={() => setTool(tool === 'cut' ? 'select' : 'cut')}><span className="vertical-line-icon"/>竖切分拍</button><button className="button button-quiet compact" disabled={boxBusy || !project.pages.length} onClick={() => void startAutoBoxes()}>{boxBusy ? <LoaderCircle className="spin" size={13}/> : <WandSparkles size={13}/>} {boxBusy ? '正在框选' : '自动框选'}</button><button className="button button-active compact auto-align-launch" disabled={autoBusy || !project.pages.length || !project.source.audioUrl} onClick={() => void startAutoAlign()}>{autoBusy ? <LoaderCircle className="spin" size={13}/> : <WandSparkles size={13}/>} {autoBusy ? '正在对齐' : '自动对齐'}</button><small>{autoBusy ? autoStage : boxBusy ? '正在查找歌词行和明显留白' : tool === 'row' ? '在歌词行左上角单击，或向右拖出标注宽度' : tool === 'cut' ? '点击行内添加竖线，点击已有竖线可删除' : '自动框选只找位置；自动对齐还会估计音频时间'}</small></div>
+        <div className="workspace-toolbar"><div className="toolbar-files"><button className="file-chip" title={project.source.pdf ? `点击重新选择 PDF：${project.source.pdf}` : '选择 PDF 乐谱'} onClick={() => pdfInput.current?.click()}><FileImage size={14}/><span>PDF</span><strong>{fileName(project.source.pdf) || '选择乐谱'}</strong></button><button className="file-chip" title={project.source.audio ? `点击重新选择 MP3：${project.source.audio}` : '选择 MP3 音频'} onClick={() => audioInput.current?.click()}><FileAudio2 size={14}/><span>MP3</span><strong>{fileName(project.source.audio) || '选择音频'}</strong></button></div><div className="toolbar-right"><div className="page-count">{project.pages.length ? <><span>第</span><strong>{activePage + 1}</strong><span>/ {project.pages.length} 页</span><button className="page-arrow" disabled={activePage === 0} onClick={() => setActivePage(activePage - 1)}><ChevronLeft size={15}/></button><button className="page-arrow" disabled={activePage >= project.pages.length - 1} onClick={() => setActivePage(activePage + 1)}><ChevronRight size={15}/></button></> : <span>等待导入乐谱</span>}</div><span className="toolbar-sep"/><div className="zoom-control"><button title="缩小乐谱" onClick={() => changeZoom(-.1)}><ZoomOut size={15}/></button><button className="zoom-value" title="点击恢复自动适配" onClick={() => setZoom(null)}>{zoom === null ? '自动适配' : `${Math.round(zoom * 100)}%`}</button><button title="放大乐谱" onClick={() => changeZoom(.1)}><ZoomIn size={15}/></button></div></div></div>
+        <div className="segmentation-toolbar"><span>切分乐谱</span><button className={`button compact ${tool === 'row' ? 'button-active' : 'button-quiet'}`} title="添加标注（N）" onClick={() => setTool(tool === 'row' ? 'select' : 'row')}><span className="horizontal-line-icon"/>添加标注</button><button className={`button compact ${tool === 'cut' ? 'button-active' : 'button-quiet'}`} onClick={() => setTool(tool === 'cut' ? 'select' : 'cut')}><span className="vertical-line-icon"/>竖切成框</button><button className="button button-quiet compact" disabled={boxBusy || !project.pages.length} onClick={() => void startAutoBoxes()}>{boxBusy ? <LoaderCircle className="spin" size={13}/> : <WandSparkles size={13}/>} {boxBusy ? '正在框选' : '自动框选'}</button><button className="button button-active compact auto-align-launch" disabled={autoBusy || !project.pages.length || !project.source.audioUrl} onClick={() => void startAutoAlign()}>{autoBusy ? <LoaderCircle className="spin" size={13}/> : <WandSparkles size={13}/>} {autoBusy ? '正在对齐' : '自动对齐'}</button><button className="button button-quiet compact reset-toolbar" disabled={!project.segments.length && !(project.flags || []).length} onClick={() => setResetOpen(true)}><RotateCcw size={13}/>重新标注</button><small>{autoBusy ? autoStage : boxBusy ? '正在查找歌词行和明显留白' : tool === 'row' ? '在歌词行左上角单击，或向右拖出标注宽度' : tool === 'cut' ? '点击已有标注框，将它分成左右两个独立框' : '自动框选只找位置；自动对齐还会估计音频时间'}</small></div>
         <div className="canvas-area" ref={canvasRef}>
-          {currentPage ? <div className="page-frame" key={currentPage.id} style={{ width: `min(${Math.round(510 * zoom)}px, 83%)` }}><div ref={pageRef} className={`score-page ${tool === 'row' ? 'drawing' : ''} ${tool === 'anchor' || tool === 'cut' ? 'anchoring' : ''} ${playing ? 'previewing' : ''}`} style={{ aspectRatio: `${currentPage.width} / ${currentPage.height}` }} onPointerDown={pagePointerDown} onPointerMove={pagePointerMove} onPointerUp={pagePointerUp} onPointerCancel={pagePointerUp}>
+          {currentPage ? <div className="page-frame" key={currentPage.id} style={{ width: zoom === null ? '58%' : `${Math.round(510 * zoom)}px`, maxWidth: 'calc(100% - 12px)' }}><div ref={pageRef} className={`score-page ${tool === 'row' ? 'drawing' : ''} ${tool === 'cut' ? 'anchoring' : ''} ${playing ? 'previewing' : ''}`} style={{ aspectRatio: `${currentPage.width} / ${currentPage.height}` }} onPointerDown={pagePointerDown} onPointerMove={pagePointerMove} onPointerUp={pagePointerUp} onPointerCancel={pagePointerUp}>
               <img src={currentPage.image.startsWith('data:') || currentPage.image.startsWith('blob:') ? currentPage.image : currentPage.image} alt={`乐谱第 ${activePage + 1} 页`} draggable={false}/>
               <svg className="annotation-layer" viewBox="0 0 1000 1414" preserveAspectRatio="none">
                 <defs>
@@ -481,24 +490,24 @@ function App() {
                   <clipPath id="ink-reveal"><rect x={(activeSegment?.region.x || 0) * 1000} y={(activeSegment?.region.y || 0) * 1414} width={(activeSegment?.region.width || 0) * progress * 1000} height={(activeSegment?.region.height || 0) * 1414}/></clipPath>
                 </defs>
                 {activeSegment?.pageId === currentPage.id && progress > 0 && <image href={currentPage.image} x="0" y="0" width="1000" height="1414" preserveAspectRatio="none" filter="url(#ink-recolor)" clipPath="url(#ink-reveal)" pointerEvents="none"/>}
-                {project.segments.filter(s => s.pageId === currentPage.id).map(seg => { const r = seg.region; return <g key={seg.id} className={`annotation ${selected === seg.id ? 'is-selected' : ''}`} onPointerDown={e => { e.stopPropagation(); setSelected(seg.id); if (tool === 'row') return; if (tool === 'anchor') { addAnchor(seg, e); return }; if (tool === 'cut') { toggleCut(seg, e); return }; dragRef.current = { id: seg.id, kind: 'move', startX: e.clientX, startY: e.clientY, region: { ...r } }; (e.currentTarget as SVGGElement).setPointerCapture(e.pointerId) }}>
+                {project.segments.filter(s => s.pageId === currentPage.id).map(seg => { const r = seg.region; return <g key={seg.id} className={`annotation ${selected === seg.id ? 'is-selected' : ''}`} onPointerDown={e => { e.stopPropagation(); setSelected(seg.id); if (tool === 'row') return; if (tool === 'cut') { splitSegment(seg, e); return }; dragRef.current = { id: seg.id, kind: 'move', startX: e.clientX, startY: e.clientY, region: { ...r } }; (e.currentTarget as SVGGElement).setPointerCapture(e.pointerId) }}>
                   <rect className="region-hit-area" x={r.x * 1000} y={r.y * 1414} width={r.width * 1000} height={r.height * 1414} rx="4"/>
                   <rect className="region-outline" x={r.x * 1000} y={r.y * 1414} width={r.width * 1000} height={r.height * 1414} rx="4"/>
-                  {(seg.cuts || []).map((cut, index) => <line key={`${seg.id}-cut-${index}`} className="beat-cut" x1={(r.x + r.width * cut) * 1000} x2={(r.x + r.width * cut) * 1000} y1={r.y * 1414} y2={(r.y + r.height) * 1414}><title>第 {index + 1} 拍分界</title></line>)}
-                  {(selected === seg.id || activeSegment?.id === seg.id) && (seg.anchors || []).map(anchor => <g key={`${seg.id}-${anchor.time}`} className="anchor-point"><line x1={(r.x + r.width * anchor.progress) * 1000} x2={(r.x + r.width * anchor.progress) * 1000} y1={r.y * 1414} y2={(r.y + r.height) * 1414}/><circle cx={(r.x + r.width * anchor.progress) * 1000} cy={(r.y + r.height / 2) * 1414} r="7"/><title>{formatTime(anchor.time)}</title></g>)}
                   <g className="region-number" transform={`translate(${r.x * 1000},${Math.max(2, r.y * 1414 - 29)})`}><rect className="region-number-bg" width="34" height="24" rx="5"/><text className="region-number-text" x="17" y="17" textAnchor="middle">{String(project.segments.indexOf(seg) + 1).padStart(2, '0')}</text></g>
-                  {selected === seg.id && <rect className="resize-handle" x={(r.x + r.width) * 1000 - 8} y={(r.y + r.height) * 1414 - 8} width="16" height="16" rx="3" onPointerDown={e => { e.stopPropagation(); dragRef.current = { id: seg.id, kind: 'resize', startX: e.clientX, startY: e.clientY, region: { ...r } }; (e.currentTarget as SVGRectElement).setPointerCapture(e.pointerId) }}/>} 
+                  {selected === seg.id && (['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'] as const).map(edge => {
+                    const x = (r.x + (edge.includes('w') ? 0 : edge.includes('e') ? r.width : r.width / 2)) * 1000
+                    const y = (r.y + (edge.includes('n') ? 0 : edge.includes('s') ? r.height : r.height / 2)) * 1414
+                    return <rect key={edge} className={`resize-handle edge-${edge}`} x={x - 8} y={y - 8} width="16" height="16" rx="3" onPointerDown={e => { e.stopPropagation(); dragRef.current = { id: seg.id, kind: 'resize', edge, startX: e.clientX, startY: e.clientY, region: { ...r } }; (e.currentTarget as SVGRectElement).setPointerCapture(e.pointerId) }}/>
+                  })}
                 </g> })}
                 {draft && <rect className="draft-region" x={draft.x * 1000} y={draft.y * 1414} width={draft.width * 1000} height={draft.height * 1414} rx="4"/>}
               </svg>
-            </div><div className="page-caption"><span>第 {activePage + 1} 页</span><span>{currentPage.width} × {currentPage.height} px · 原始比例标注</span></div></div> : <div className="empty-workspace"><div className="empty-art"><div className="music-note note-a">♪</div><div className="music-note note-b">♫</div><div className="empty-paper"><div className="paper-lines">𝅘𝅥𝅮　1 2 3 5　|　6 — 5 3<br/>　小 星 星　　亮 晶 晶</div><div className="paper-highlight"/></div><div className="upload-orbit"><ImagePlus size={20}/></div></div><div className="empty-copy"><span className="eyebrow">从乐谱开始</span><h1>让每一句歌，都有自己的节奏</h1><p>导入一份简谱 PDF 和伴奏 MP3，逐行标注歌词位置，<br/>再为每段旋律校准准确的播放时间。</p></div><div className="empty-actions"><button className="button button-primary" onClick={() => pdfInput.current?.click()}><FilePlus2 size={16}/>导入 PDF 乐谱</button><button className="button button-secondary" onClick={() => audioInput.current?.click()}><Headphones size={16}/>选择 MP3 音频</button></div><div className="supported-note"><span className="check-mini"><Check size={11}/></span>页面按原始尺寸渲染，标注坐标随缩放保持准确</div></div>}
+            </div><div className="page-caption"><span>第 {activePage + 1} 页</span><span>{currentPage.width} × {currentPage.height} px · 原始比例标注</span></div></div> : <div className="empty-workspace"><div className="empty-art"><div className="music-note note-a">♪</div><div className="music-note note-b">♫</div><div className="empty-paper"><div className="paper-lines">𝅘𝅥𝅮　1 2 3 5　|　6 — 5 3<br/>　小 星 星　　亮 晶 晶</div><div className="paper-highlight"/></div><div className="upload-orbit"><ImagePlus size={20}/></div></div><div className="empty-copy"><span className="eyebrow">从乐谱开始</span><h1>让每一句歌，都有自己的节奏</h1><p>导入一份简谱 PDF 和伴奏 MP3，逐行标注歌词位置，<br/>再为每段旋律校准准确的播放时间。</p></div><p className="empty-start-note">在上方工具栏选择 PDF 和 MP3 即可开始</p><div className="supported-note"><span className="check-mini"><Check size={11}/></span>页面按原始尺寸渲染，标注坐标随缩放保持准确</div></div>}
         </div>
         <div className="transport-panel"><div className="transport-left"><button className="play-button" onClick={togglePlay}>{playing ? <Pause size={17} fill="currentColor"/> : <Play size={17} fill="currentColor"/>}</button><button className="flag-button" onClick={addFlag} disabled={!project.segments.length || !project.source.audio} title="记录此刻的音频时间（Enter）"><Flag size={14}/><span>打点</span>{Boolean(project.flags?.length) && <em>{project.flags?.length}</em>}</button><div className="transport-time"><strong>{formatTime(time)}</strong><span>/ {formatTime(duration)}</span></div><div className="transport-divider"/><div className="speed-control"><span>速度</span><select defaultValue="1" onChange={e => { if (audioRef.current) audioRef.current.playbackRate = Number(e.target.value) }}><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1">1.0×</option><option value="1.25">1.25×</option></select><ChevronDown size={12}/></div></div><div className="transport-right"><span className="now-playing-dot"/><span>{activeSegment ? `正在预览 · 乐句 ${String(project.segments.indexOf(activeSegment) + 1).padStart(2, '0')}` : project.source.audio ? '音频已就绪' : '等待导入音频'}</span><button className="icon-button tiny"><Settings2 size={16}/></button></div><div className="transport-progress" onClick={e => { const rect = e.currentTarget.getBoundingClientRect(); seek((e.clientX - rect.left) / rect.width * duration) }}><div className="transport-progress-fill" style={{ width: `${duration ? time / duration * 100 : 0}%` }}/>{(project.flags || []).map(flag => <button key={flag.id} className="flag-tick" style={{ left: `${duration ? flag.time / duration * 100 : 0}%` }} title={`打点 ${formatTime(flag.time)}`} onClick={e => { e.stopPropagation(); seek(flag.time) }} />)}<div className="transport-progress-knob" style={{ left: `${duration ? time / duration * 100 : 0}%` }}/></div></div>
         <TimelinePanel audioUrl={project.source.audioUrl} audioName={project.source.audio} duration={duration || project.audioDuration || 0} segments={project.segments} selected={selected} time={time} onSelect={setSelected} onSeek={seek} onDuplicate={duplicateBelow}/>
       </main>
-      <aside className="right-panel"><div className="right-panel-title"><div><span className="eyebrow">检查器</span><h2>标注属性</h2></div><button className="icon-button"><MoreHorizontal size={17}/></button></div>{selected && project.segments.some(s => s.id === selected) ? (() => { const seg = project.segments.find(s => s.id === selected)!; return <><div className="inspector-card"><div className="inspector-segment-title"><div className="segment-color-dot"/><div><strong>乐句 {String(project.segments.indexOf(seg) + 1).padStart(2, '0')}</strong><span>页面 {project.pages.findIndex(p => p.id === seg.pageId) + 1} · 左至右</span></div><button className="icon-button tiny" onClick={() => { setProject(p => ({ ...p, segments: p.segments.filter(s => s.id !== selected) })); setSelected(null) }}><X size={15}/></button></div><label className="field-label">开始时间</label><div className="time-input"><Clock3 size={14}/><input value={formatTime(seg.startTime)} onChange={e => { const v = e.target.value.split(':').reduce((a, b) => a * 60 + Number(b), 0); if (Number.isFinite(v)) updateSegment(seg.id, { startTime: v }) }}/><button onClick={() => updateSegment(seg.id, { startTime: time })}>设为当前</button></div><label className="field-label">结束时间</label><div className="time-input"><Clock3 size={14}/><input value={formatTime(seg.endTime)} onChange={e => { const v = e.target.value.split(':').reduce((a, b) => a * 60 + Number(b), 0); if (Number.isFinite(v)) updateSegment(seg.id, { endTime: v }) }}/><button onClick={() => updateSegment(seg.id, { endTime: time })}>设为当前</button></div><div className="field-divider"/><div className="field-heading"><span>区域位置</span><span>页面相对坐标</span></div><div className="coordinate-grid">{(['x', 'y', 'width', 'height'] as const).map(k => <label key={k}><span>{{x:'X 位置', y:'Y 位置', width:'宽度', height:'高度'}[k]}</span><div><input type="number" min="0" max="1" step="0.01" value={seg.region[k].toFixed(2)} onChange={e => updateSegment(seg.id, { region: fitRegion({ ...seg.region, [k]: Number(e.target.value) }) })}/><em>%</em></div></label>)}</div><div className="field-divider"/><div className="highlight-setting"><div><strong>高亮样式</strong><span>橘红色文字 · 无底色</span></div><div className="yellow-swatch"/></div><div className="inspector-actions"><button className="button button-secondary full" onClick={duplicateBelow}><Scissors size={14}/>复制到下一行</button><button className="button button-danger-quiet" onClick={() => { setProject(p => ({ ...p, segments: p.segments.filter(s => s.id !== selected) })); setSelected(null) }}>删除标注</button></div></div></> })() : <div className="inspector-empty"><div className="inspector-empty-icon"><WandSparkles size={19}/></div><strong>选择一条标注</strong><p>选中乐谱上的标注区域，<br/>即可调整时间与位置。</p><div className="inspector-hint"><Sparkles size={14}/><span>支持拖动区域，或精确输入页面相对坐标</span></div></div>}
-        {selected && project.segments.some(s => s.id === selected) && <button className={`button ${tool === 'anchor' ? 'button-active' : 'button-secondary'} full anchor-mode-button`} onClick={() => setTool(tool === 'anchor' ? 'select' : 'anchor')}><Flag size={13}/>{tool === 'anchor' ? '点击乐句中的字词位置' : `添加同步锚点${project.segments.find(s => s.id === selected)?.anchors?.length ? ` · ${project.segments.find(s => s.id === selected)?.anchors?.length}` : ''}（A）`}</button>}
-        {selected && project.segments.some(s => s.id === selected) && <div className="cut-info">竖线 {project.segments.find(s => s.id === selected)?.cuts?.length || 0} 条 · 默认将乐句时间均分给各拍；手动同步锚点优先。</div>}
+      <aside className="right-panel"><div className="right-panel-title"><div><span className="eyebrow">检查器</span><h2>标注属性</h2></div><button className="icon-button"><MoreHorizontal size={17}/></button></div>{selected && project.segments.some(s => s.id === selected) ? (() => { const seg = project.segments.find(s => s.id === selected)!; return <><div className="inspector-card"><div className="inspector-segment-title"><div className="segment-color-dot"/><div><strong>乐句 {String(project.segments.indexOf(seg) + 1).padStart(2, '0')}</strong><span>页面 {project.pages.findIndex(p => p.id === seg.pageId) + 1} · 左至右</span></div><button className="icon-button tiny" onClick={() => deleteSegment(seg.id)}><X size={15}/></button></div><label className="field-label">开始时间</label><div className="time-input"><Clock3 size={14}/><input value={formatTime(seg.startTime)} onChange={e => { const v = e.target.value.split(':').reduce((a, b) => a * 60 + Number(b), 0); if (Number.isFinite(v)) updateSegment(seg.id, { startTime: v }) }}/><button onClick={() => updateSegment(seg.id, { startTime: time })}>设为当前</button></div><label className="field-label">结束时间</label><div className="time-input"><Clock3 size={14}/><input value={formatTime(seg.endTime)} onChange={e => { const v = e.target.value.split(':').reduce((a, b) => a * 60 + Number(b), 0); if (Number.isFinite(v)) updateSegment(seg.id, { endTime: v }) }}/><button onClick={() => updateSegment(seg.id, { endTime: time })}>设为当前</button></div><div className="field-divider"/><div className="highlight-setting"><div><strong>高亮样式</strong><span>橘红色文字 · 无底色</span></div><div className="yellow-swatch"/></div><div className="inspector-actions"><button className="button button-secondary full" onClick={duplicateBelow}><Scissors size={14}/>复制到下一行</button><button className="button button-danger-quiet" onClick={() => deleteSegment(seg.id)}>删除标注</button></div></div></> })() : <div className="inspector-empty"><div className="inspector-empty-icon"><WandSparkles size={19}/></div><strong>选择一条标注</strong><p>选中乐谱上的标注区域，<br/>即可调整时间与位置。</p><div className="inspector-hint"><Sparkles size={14}/><span>拖动标注框可移动位置，拖动边框控制点可调整大小</span></div></div>}
         <div className="inspector-bottom"><div className="tip-card"><div className="tip-icon"><Radio size={15}/></div><div><strong>连续打点</strong><p>播放到第一句开唱时按 <kbd>Enter</kbd>；<br/>每次换句再按一次，最后一句结束<br/>时再打一次收尾。</p></div></div><button className="help-link" onClick={() => flash('播放时点击传输栏的「打点」，或按 Enter 记录此刻时间。')}><CircleHelp size={15}/> 标注小贴士</button></div>
       </aside>
     </div>

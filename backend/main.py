@@ -25,6 +25,7 @@ from backend.models.project import ProjectDocument
 from backend.auto_alignment import suggest as suggest_alignment
 from backend.auto_boxes import suggest_boxes
 from backend.waveform import waveform_for_audio
+from backend.vocal_waveform import cache_key as vocal_cache_key, separator_available, vocal_waveform_for_audio
 from backend.rendering.frame_renderer import render_frame
 from backend.rendering.video_renderer import encode_video
 
@@ -32,15 +33,20 @@ ROOT = Path(__file__).resolve().parent
 PROJECTS = ROOT / "projects"
 MEDIA = ROOT / "media"
 EXPORTS = ROOT / "exports"
+VOCAL_CACHE = ROOT.parent / "reference" / "vocals"
 PROJECTS.mkdir(exist_ok=True)
 MEDIA.mkdir(exist_ok=True)
 EXPORTS.mkdir(exist_ok=True)
 executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="score-export")
 alignment_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="score-alignment")
+vocal_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="score-vocals")
 jobs: dict[str, dict] = {}
 jobs_lock = Lock()
 alignment_jobs: dict[str, dict] = {}
 alignment_lock = Lock()
+vocal_jobs: dict[str, dict] = {}
+vocal_jobs_by_audio: dict[str, str] = {}
+vocal_lock = Lock()
 
 app = FastAPI(title="谱间本地项目服务", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"], allow_methods=["*"], allow_headers=["*"])
@@ -146,15 +152,6 @@ def validate_project(project: dict):
                 errors.append(f"{label}的标注区域超出页面范围")
         except (KeyError, TypeError, ValueError):
             errors.append(f"{label}缺少有效的标注区域")
-        anchors = segment.get("anchors", [])
-        if anchors:
-            if anchors != sorted(anchors, key=lambda anchor: float(anchor.get("time", 0))):
-                errors.append(f"{label}的同步锚点没有按时间排序")
-            if anchors != sorted(anchors, key=lambda anchor: float(anchor.get("progress", 0))):
-                errors.append(f"{label}的同步锚点进度没有从左到右排列")
-        cuts = segment.get("cuts") or []
-        if any(not 0 < float(cut) < 1 for cut in cuts) or cuts != sorted(set(cuts)):
-            errors.append(f"{label}的竖切线需位于行内且从左到右排列")
     for previous, current in zip(segments, segments[1:]):
         gap = float(current["startTime"]) - float(previous["endTime"])
         if gap < -0.05:
@@ -300,6 +297,49 @@ def audio_waveform(request: WaveformRequest):
         return waveform_for_audio(str(path), path.stat().st_mtime_ns)
     except (FileNotFoundError, ValueError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+def _run_vocal_waveform(job_id: str, path: Path):
+    def update(stage: str):
+        with vocal_lock:
+            vocal_jobs[job_id].update(status="running", stage=stage)
+
+    try:
+        result = vocal_waveform_for_audio(path, VOCAL_CACHE, update)
+        with vocal_lock:
+            vocal_jobs[job_id].update(status="completed", stage="人声波形已生成", waveform=result)
+    except Exception as error:
+        with vocal_lock:
+            vocal_jobs[job_id].update(status="failed", stage="人声分离失败", error=str(error))
+
+
+@app.post("/api/waveform/vocals")
+def start_vocal_waveform(request: WaveformRequest):
+    try:
+        path = resolve_audio({"source": {"audioUrl": request.audioUrl}})
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    key = vocal_cache_key(path)
+    if not separator_available() and not (VOCAL_CACHE / key / "waveform.json").is_file():
+        raise HTTPException(status_code=424, detail="尚未安装 Demucs 人声分离组件，请按 README 的「人声波形」步骤安装")
+    with vocal_lock:
+        existing = vocal_jobs_by_audio.get(key)
+        if existing and vocal_jobs[existing]["status"] != "failed":
+            return {"jobId": existing, **vocal_jobs[existing]}
+        job_id = uuid.uuid4().hex
+        vocal_jobs[job_id] = {"status": "queued", "stage": "等待提取人声"}
+        vocal_jobs_by_audio[key] = job_id
+    vocal_executor.submit(_run_vocal_waveform, job_id, path)
+    return {"jobId": job_id, "status": "queued", "stage": "等待提取人声"}
+
+
+@app.get("/api/waveform/vocals/{job_id}")
+def vocal_waveform_status(job_id: str):
+    with vocal_lock:
+        job = vocal_jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="找不到人声提取任务")
+        return {"jobId": job_id, **job}
 
 
 @app.post("/api/auto-boxes")

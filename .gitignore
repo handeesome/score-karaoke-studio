@@ -2,6 +2,7 @@ node_modules/
 dist/
 .venv/
 reference/models/
+reference/vocals/
 __pycache__/
 *.py[cod]
 backend/projects/*/source.pdf
