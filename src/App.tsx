@@ -18,6 +18,7 @@ function App() {
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [mergeTarget, setMergeTarget] = useState<string | null>(null)
   const [orderDraft, setOrderDraft] = useState<string | null>(null)
+  const [editingNumber, setEditingNumber] = useState<{ id: string; part: number; value: string } | null>(null)
   const [zoom, setZoom] = useState<number | null>(null)
   const [duration, setDuration] = useState(0)
   const [time, setTime] = useState(0)
@@ -44,6 +45,8 @@ function App() {
   const canvasRef = useRef<HTMLDivElement>(null)
   const pageRef = useRef<HTMLDivElement>(null)
   const previewUrlRef = useRef<string | null>(null)
+  const numberInputRef = useRef<HTMLInputElement>(null)
+  const cancelNumberEdit = useRef(false)
   const dragRef = useRef<{ id: string; part: number; kind: 'move' | 'resize'; edge?: string; startX: number; startY: number; region: Region; historySaved?: boolean } | null>(null)
   const draftRef = useRef<{ x: number; y: number } | null>(null)
   const marqueeRef = useRef<{ x: number; y: number } | null>(null)
@@ -90,6 +93,7 @@ function App() {
 
   useEffect(() => { localStorage.setItem('pujian-project', JSON.stringify(project)) }, [project])
   useEffect(() => { setOrderDraft(null) }, [selected])
+  useEffect(() => { numberInputRef.current?.focus(); numberInputRef.current?.select() }, [editingNumber?.id, editingNumber?.part])
   useEffect(() => {
     const repaired = recoverFlagsFromTiming(project)
     if (repaired !== project) setProject(repaired)
@@ -180,6 +184,11 @@ function App() {
 
   const flash = (text: string) => { setMessage(text); window.setTimeout(() => setMessage(''), 2400) }
   const selectOne = (id: string | null) => { setSelected(id); setSelectedIds(id ? [id] : []); setMergeTarget(null); setOrderDraft(null) }
+  const selectSegment = (id: string, additive: boolean) => {
+    if (!additive) { selectOne(id); return }
+    const ids = selectedIds.includes(id) ? selectedIds.filter(selectedId => selectedId !== id) : [...selectedIds, id]
+    setSelectedIds(ids); setSelected(ids[ids.length - 1] || null)
+  }
   const moveSegmentTo = (id: string, positionText: string) => {
     const position = Number(positionText)
     if (!/^\d+$/.test(positionText) || !Number.isInteger(position) || position < 1 || position > project.segments.length) {
@@ -313,7 +322,7 @@ function App() {
       if (event.key.toLowerCase() === 'e' && selected) updateSegment(selected, { endTime: time })
     }
     window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey)
-  }, [time, selected, duration, project, resetOpen, autoCandidates, boxCandidates, exportOpen])
+  }, [time, selected, selectedIds, duration, project, resetOpen, autoCandidates, boxCandidates, exportOpen])
 
   function resetAnnotations() {
     if (audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0 }
@@ -350,12 +359,40 @@ function App() {
   }
   const mergeSelected = () => mergeSegments(selectedIds)
   const duplicateBelow = () => {
-    const source = project.segments.find(s => s.id === selected)
-    if (!source) { flash('先选中一条标注'); return }
-    const id = `segment-${Date.now()}`
-    const startTime = source.endTime; const endTime = startTime + (source.endTime - source.startTime)
-    const region = fitRegion({ ...source.region, y: source.region.y + source.region.height + .025 })
-    setProject(p => ({ ...p, segments: [...p.segments, { ...source, id, region, regions: undefined, startTime, endTime }] })); selectOne(id)
+    const sources = project.segments.filter(segment => selectedIds.includes(segment.id))
+    if (!sources.length) { flash('先选中要复制的标注'); return }
+    const parts = sources.flatMap(segmentRegions)
+    const offsets = new Map<string, number>()
+    for (const pageId of new Set(parts.map(part => part.pageId))) {
+      const onPage = parts.filter(part => part.pageId === pageId)
+      const top = Math.min(...onPage.map(part => part.region.y))
+      const bottom = Math.max(...onPage.map(part => part.region.y + part.region.height))
+      const offset = bottom - top + .025
+      if (bottom + offset > 1) { flash('选中区域下方空间不足，无法复制到下一行'); return }
+      offsets.set(pageId, offset)
+    }
+    const copies = sources.map((source, index): Segment => {
+      const regions = segmentRegions(source).map(part => ({
+        pageId: part.pageId,
+        region: fitRegion({ ...part.region, y: part.region.y + offsets.get(part.pageId)! }),
+      }))
+      const single = sources.length === 1
+      return { ...source, id: `segment-${Date.now()}-${index}`, pageId: regions[0].pageId,
+        region: regions[0].region, regions: regions.length > 1 ? regions : undefined,
+        startTime: single ? source.endTime : 0,
+        endTime: single ? source.endTime + (source.endTime - source.startTime) : 4,
+        text: undefined }
+    })
+    const lastIndex = project.segments.reduce((last, segment, index) => selectedIds.includes(segment.id) ? index : last, -1)
+    lastHistoryAt.current = 0
+    setProject(previous => {
+      const segments = [...previous.segments]
+      segments.splice(sources.length === 1 ? segments.length : lastIndex + 1, 0, ...copies)
+      return { ...previous, segments, flags: previous.flags?.filter(flag => flag.kind !== 'end') }
+    })
+    const ids = copies.map(copy => copy.id)
+    setSelectedIds(ids); setSelected(ids[ids.length - 1]); setTool('select')
+    flash(sources.length > 1 ? `已复制 ${copies.length} 个标注到下一行；新乐句待打点` : '已复制标注到下一行')
   }
   const splitSegment = (segment: Segment, part: number, event: React.PointerEvent<SVGGElement>) => {
     if (part !== 0 || segmentRegions(segment).length > 1) { flash('合并的乐句包含多个框，请先调整各框位置'); return }
@@ -585,7 +622,7 @@ function App() {
     <div className="main-layout">
       <main className="workspace">
         <div className="workspace-toolbar"><div className="toolbar-files"><button className="file-chip" title={project.source.pdf ? `点击重新选择 PDF：${project.source.pdf}` : '选择 PDF 乐谱'} onClick={() => pdfInput.current?.click()}><FileImage size={14}/><span>PDF</span><strong>{fileName(project.source.pdf) || '选择乐谱'}</strong></button><button className="file-chip" title={project.source.audio ? `点击重新选择 MP3：${project.source.audio}` : '选择 MP3 音频'} onClick={() => audioInput.current?.click()}><FileAudio2 size={14}/><span>MP3</span><strong>{fileName(project.source.audio) || '选择音频'}</strong></button></div><div className="toolbar-right"><div className="page-count">{project.pages.length ? <><span>第</span><strong>{activePage + 1}</strong><span>/ {project.pages.length} 页</span><button className="page-arrow" disabled={activePage === 0} onClick={() => setActivePage(activePage - 1)}><ChevronLeft size={15}/></button><button className="page-arrow" disabled={activePage >= project.pages.length - 1} onClick={() => setActivePage(activePage + 1)}><ChevronRight size={15}/></button></> : <span>等待导入乐谱</span>}</div><span className="toolbar-sep"/><div className="zoom-control"><button title="缩小乐谱" onClick={() => changeZoom(-.1)}><ZoomOut size={15}/></button><button className="zoom-value" title="点击恢复自动适配" onClick={() => setZoom(null)}>{zoom === null ? '自动适配' : `${Math.round(zoom * 100)}%`}</button><button title="放大乐谱" onClick={() => changeZoom(.1)}><ZoomIn size={15}/></button></div></div></div>
-        <div className="segmentation-toolbar"><span>切分乐谱</span><button className={`button compact ${tool === 'row' ? 'button-active' : 'button-quiet'}`} title="添加标注（N）" onClick={() => setTool(tool === 'row' ? 'select' : 'row')}><span className="horizontal-line-icon"/>添加标注</button><button className={`button compact ${tool === 'cut' ? 'button-active' : 'button-quiet'}`} onClick={() => setTool(tool === 'cut' ? 'select' : 'cut')}><span className="vertical-line-icon"/>竖切成框</button><button className="button button-quiet compact" disabled={boxBusy || !project.pages.length} onClick={() => void startAutoBoxes()}>{boxBusy ? <LoaderCircle className="spin" size={13}/> : <WandSparkles size={13}/>} {boxBusy ? '正在框选' : '自动框选'}</button><button className="button button-quiet compact" disabled={!selected || !project.segments.some(segment => segment.id === selected)} onClick={duplicateBelow}><Scissors size={13}/>复制到下一行</button><button className={`button compact ${tool === 'select' ? 'button-active' : 'button-quiet'}`} onClick={() => setTool('select')}>框选乐句</button><button className="button button-quiet compact" disabled={selectedIds.length < 2} onClick={mergeSelected}>合并乐句{selectedIds.length > 1 ? ` (${selectedIds.length})` : ''}</button><button className="button button-active compact auto-align-launch" disabled={autoBusy || !project.pages.length || !project.source.audioUrl} onClick={() => void startAutoAlign()}>{autoBusy ? <LoaderCircle className="spin" size={13}/> : <WandSparkles size={13}/>} {autoBusy ? '正在对齐' : '自动对齐'}</button><button className="button button-quiet compact reset-toolbar" disabled={!project.segments.length && !(project.flags || []).length} onClick={() => setResetOpen(true)}><RotateCcw size={13}/>重新标注</button><small>{autoBusy ? autoStage : boxBusy ? '正在查找歌词行和明显留白' : tool === 'row' ? '在歌词行左上角单击，或向右拖出标注宽度' : tool === 'cut' ? '点击已有标注框，将它分成左右两个独立框' : '在空白处拖框多选；Shift 点击可追加选择'}</small></div>
+        <div className="segmentation-toolbar"><span>切分乐谱</span><button className={`button compact ${tool === 'row' ? 'button-active' : 'button-quiet'}`} title="添加标注（N）" onClick={() => setTool(tool === 'row' ? 'select' : 'row')}><span className="horizontal-line-icon"/>添加标注</button><button className={`button compact ${tool === 'cut' ? 'button-active' : 'button-quiet'}`} onClick={() => setTool(tool === 'cut' ? 'select' : 'cut')}><span className="vertical-line-icon"/>竖切成框</button><button className="button button-quiet compact" disabled={boxBusy || !project.pages.length} onClick={() => void startAutoBoxes()}>{boxBusy ? <LoaderCircle className="spin" size={13}/> : <WandSparkles size={13}/>} {boxBusy ? '正在框选' : '自动框选'}</button><button className="button button-quiet compact" disabled={!selected || !project.segments.some(segment => segment.id === selected)} onClick={duplicateBelow} title={selectedIds.length > 1 ? `复制已选的 ${selectedIds.length} 个标注到下一行` : "复制选中标注到下一行"}><Scissors size={13}/>复制到下一行{selectedIds.length > 1 ? ` (${selectedIds.length})` : ""}</button><button className={`button compact ${tool === 'select' ? 'button-active' : 'button-quiet'}`} onClick={() => setTool('select')}>框选乐句</button><button className="button button-quiet compact" disabled={selectedIds.length < 2} onClick={mergeSelected}>合并乐句{selectedIds.length > 1 ? ` (${selectedIds.length})` : ''}</button><button className="button button-active compact auto-align-launch" disabled={autoBusy || !project.pages.length || !project.source.audioUrl} onClick={() => void startAutoAlign()}>{autoBusy ? <LoaderCircle className="spin" size={13}/> : <WandSparkles size={13}/>} {autoBusy ? '正在对齐' : '自动对齐'}</button><button className="button button-quiet compact reset-toolbar" disabled={!project.segments.length && !(project.flags || []).length} onClick={() => setResetOpen(true)}><RotateCcw size={13}/>重新标注</button><small>{autoBusy ? autoStage : boxBusy ? '正在查找歌词行和明显留白' : tool === 'row' ? '在歌词行左上角单击，或向右拖出标注宽度' : tool === 'cut' ? '点击已有标注框，将它分成左右两个独立框' : '在空白处拖框多选；Shift 点击可追加选择'}</small></div>
         <div className="canvas-area" ref={canvasRef}>
           {currentPage ? <div className="page-frame" key={currentPage.id} style={{ width: zoom === null ? '58%' : `${Math.round(510 * zoom)}px`, maxWidth: 'calc(100% - 12px)' }}><div ref={pageRef} className={`score-page ${tool === 'row' ? 'drawing' : ''} ${tool === 'cut' ? 'anchoring' : ''} ${tool === 'select' ? 'marquee-mode' : ''} ${playing ? 'previewing' : ''}`} style={{ aspectRatio: `${currentPage.width} / ${currentPage.height}` }} onPointerDown={pagePointerDown} onPointerMove={pagePointerMove} onPointerUp={pagePointerUp} onPointerCancel={pagePointerUp}>
               <img src={currentPage.image.startsWith('data:') || currentPage.image.startsWith('blob:') ? currentPage.image : currentPage.image} alt={`乐谱第 ${activePage + 1} 页`} draggable={false}/>
@@ -595,10 +632,14 @@ function App() {
                   <clipPath id="ink-reveal">{activeRegions.map((item, index) => item.pageId === currentPage.id && <rect key={index} x={item.region.x * 1000} y={item.region.y * 1414} width={item.region.width * activeReveal[index] * 1000} height={item.region.height * 1414}/>)}</clipPath>
                 </defs>
                 {activeRegions.some(item => item.pageId === currentPage.id) && progress > 0 && <image href={currentPage.image} x="0" y="0" width="1000" height="1414" preserveAspectRatio="none" filter="url(#ink-recolor)" clipPath="url(#ink-reveal)" pointerEvents="none"/>}
-                {project.segments.flatMap(seg => segmentRegions(seg).map((item, part) => ({ seg, item, part })).filter(entry => entry.item.pageId === currentPage.id)).map(({ seg, item, part }) => { const r = item.region; return <g key={`${seg.id}-${part}`} className={`annotation ${selectedIds.includes(seg.id) ? 'is-selected' : ''}`} onPointerDown={e => { e.stopPropagation(); if (e.shiftKey) { const ids = selectedIds.includes(seg.id) ? selectedIds.filter(id => id !== seg.id) : [...selectedIds, seg.id]; setSelectedIds(ids); setSelected(ids[ids.length - 1] || null); return }; selectOne(seg.id); if (tool === 'row') return; if (tool === 'cut') { splitSegment(seg, part, e); return }; dragRef.current = { id: seg.id, part, kind: 'move', startX: e.clientX, startY: e.clientY, region: { ...r } }; (e.currentTarget as SVGGElement).setPointerCapture(e.pointerId) }}>
+                {project.segments.flatMap(seg => segmentRegions(seg).map((item, part) => ({ seg, item, part })).filter(entry => entry.item.pageId === currentPage.id)).map(({ seg, item, part }) => { const r = item.region; return <g key={`${seg.id}-${part}`} className={`annotation ${selectedIds.includes(seg.id) ? 'is-selected' : ''}`} onPointerDown={e => { e.stopPropagation(); if (e.shiftKey) { selectSegment(seg.id, true); return }; selectSegment(seg.id, false); if (tool === 'row') return; if (tool === 'cut') { splitSegment(seg, part, e); return }; dragRef.current = { id: seg.id, part, kind: 'move', startX: e.clientX, startY: e.clientY, region: { ...r } }; (e.currentTarget as SVGGElement).setPointerCapture(e.pointerId) }}>
                   <rect className="region-hit-area" x={r.x * 1000} y={r.y * 1414} width={r.width * 1000} height={r.height * 1414} rx="4"/>
                   <rect className="region-outline" x={r.x * 1000} y={r.y * 1414} width={r.width * 1000} height={r.height * 1414} rx="4"/>
-                  <g className="region-number" transform={`translate(${r.x * 1000},${Math.max(2, r.y * 1414 - 29)})`}><rect className="region-number-bg" width="34" height="24" rx="5"/><text className="region-number-text" x="17" y="17" textAnchor="middle">{String(project.segments.indexOf(seg) + 1).padStart(2, '0')}</text></g>
+                  {editingNumber?.id === seg.id && editingNumber.part === part
+                    ? <foreignObject className="region-number-editor" x={r.x * 1000} y={Math.max(2, r.y * 1414 - 29)} width="52" height="28" onPointerDown={event => event.stopPropagation()}>
+                        <input ref={numberInputRef} type="number" inputMode="numeric" min={1} max={project.segments.length} aria-label="乐句的新序号" value={editingNumber.value} onChange={event => setEditingNumber({ ...editingNumber, value: event.target.value })} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur() } else if (event.key === 'Escape') { cancelNumberEdit.current = true; setEditingNumber(null) } }} onBlur={() => { if (!cancelNumberEdit.current && editingNumber) moveSegmentTo(editingNumber.id, editingNumber.value); setEditingNumber(null) }}/>
+                      </foreignObject>
+                    : <g className="region-number" transform={`translate(${r.x * 1000},${Math.max(2, r.y * 1414 - 29)})`} onPointerDown={event => { event.stopPropagation(); selectSegment(seg.id, event.shiftKey) }} onDoubleClick={event => { event.stopPropagation(); cancelNumberEdit.current = false; setEditingNumber({ id: seg.id, part, value: String(project.segments.indexOf(seg) + 1) }) }}><title>双击修改乐句序号</title><rect className="region-number-bg" width="34" height="24" rx="5"/><text className="region-number-text" x="17" y="17" textAnchor="middle">{String(project.segments.indexOf(seg) + 1).padStart(2, '0')}</text></g>}
                   {selected === seg.id && (['n', 's', 'w', 'e'] as const).map(edge => {
                     const x = r.x * 1000; const y = r.y * 1414
                     const width = r.width * 1000; const height = r.height * 1414

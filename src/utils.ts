@@ -16,21 +16,20 @@ export function regionReveal(regions: SegmentRegion[], progress: number): number
 }
 
 export function recoverFlagsFromTiming(project: Project): Project {
-  if (!project.segments.length || project.flags?.some(flag => flag.kind === 'end')) return project
-  const existing = project.flags || []
+  if (!project.segments.length || project.flags?.length) return project
   const calibrated: Segment[] = []
   for (const [index, segment] of project.segments.entries()) {
     const defaultByIndex = Math.abs(segment.startTime - index * 4) < .001 && Math.abs(segment.endTime - (index + 1) * 4) < .001
     const defaultAtZero = Math.abs(segment.startTime) < .001 && Math.abs(segment.endTime - 4) < .001
-    if ((index >= existing.length && (defaultByIndex || defaultAtZero)) || segment.endTime <= segment.startTime ||
+    if (defaultByIndex || defaultAtZero || segment.endTime <= segment.startTime ||
       (calibrated.length && segment.startTime < calibrated[calibrated.length - 1].startTime - .05)) break
     calibrated.push(segment)
   }
-  if (calibrated.length <= existing.length) return project
-  const flags: KaraokeFlag[] = [...existing, ...calibrated.slice(existing.length).map((segment, offset) => ({
+  if (!calibrated.length) return project
+  const flags: KaraokeFlag[] = calibrated.map((segment, index) => ({
     id: `recovered-${segment.id}`, time: segment.startTime, segmentId: segment.id,
-    kind: existing.length + offset === 0 ? 'start' as const : 'transition' as const,
-  }))]
+    kind: index === 0 ? 'start' : 'transition',
+  }))
   return { ...project, flags }
 }
 
