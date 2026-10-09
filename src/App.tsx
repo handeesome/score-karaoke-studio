@@ -6,12 +6,12 @@ import AutoAlignDialog from './components/AutoAlignDialog'
 import TimelinePanel from './components/TimelinePanel'
 import AutoBoxDialog from './components/AutoBoxDialog'
 import { initialProject } from './types'
-import { calculateCameraTarget, calculateKaraokeProgress, fitRegion, formatTime, migrateLegacyCuts, recoverFlagsFromTiming, regionReveal, segmentRegions } from './utils'
+import { calculateCameraTarget, calculateKaraokeProgress, fitRegion, formatTime, migrateLegacyCuts, recoverFlagsFromTiming, regionReveal, segmentRegions, sortSegmentsByTiming } from './utils'
 
 const API = ''
 function App() {
   const [project, setProjectState] = useState<Project>(() => {
-    try { return recoverFlagsFromTiming(migrateLegacyCuts({ ...initialProject, ...JSON.parse(localStorage.getItem('pujian-project') || '{}') })) } catch { return initialProject }
+    try { return sortSegmentsByTiming(recoverFlagsFromTiming(migrateLegacyCuts({ ...initialProject, ...JSON.parse(localStorage.getItem('pujian-project') || '{}') }))) } catch { return initialProject }
   })
   const [activePage, setActivePage] = useState(0)
   const [selected, setSelected] = useState<string | null>(null)
@@ -97,7 +97,7 @@ function App() {
   useEffect(() => { numberInputRef.current?.focus() }, [editingNumber?.id, editingNumber?.part])
   useEffect(() => {
     const repaired = recoverFlagsFromTiming(project)
-    if (repaired !== project) setProject(repaired)
+    if (repaired !== project) setProject(sortSegmentsByTiming(repaired))
   }, [project])
   useEffect(() => {
     if (!project.projectId) return
@@ -116,7 +116,7 @@ function App() {
   const visibleFlags = recoverFlagsFromTiming(project).flags || []
   const markedSegments = new Set(visibleFlags.filter(flag => flag.kind !== 'end').map(flag => flag.segmentId))
   const nextUnmarkedIndex = project.segments.findIndex(segment => !markedSegments.has(segment.id))
-  const nextFlagLabel = visibleFlags.some(flag => flag.kind === 'end') ? '完成' : nextUnmarkedIndex < 0 ? '收尾' : String(nextUnmarkedIndex + 1).padStart(2, '0')
+  const nextFlagLabel = nextUnmarkedIndex < 0 ? visibleFlags.some(flag => flag.kind === 'end') ? '完成' : '收尾' : String(nextUnmarkedIndex + 1).padStart(2, '0')
   const activeRegions = activeSegment ? segmentRegions(activeSegment) : []
   const activeReveal = regionReveal(activeRegions, progress)
   const unfinishedPart = activeReveal.findIndex(value => value < 1)
@@ -209,7 +209,11 @@ function App() {
     setOrderDraft(null)
     flash(`已移到乐句 ${String(position).padStart(2, '0')}；请检查这句的音频时间`)
   }
-  const updateSegment = (id: string, patch: Partial<Segment>) => setProject(p => ({ ...p, segments: p.segments.map(s => s.id === id ? { ...s, ...patch } : s) }))
+  const updateSegment = (id: string, patch: Partial<Segment>) => setProject(p => {
+    const changedTime = patch.startTime !== undefined || patch.endTime !== undefined
+    const next = { ...p, segments: p.segments.map(s => s.id === id ? { ...s, ...patch, ...(changedTime ? { timingSet: true } : {}) } : s) }
+    return changedTime ? sortSegmentsByTiming(next) : next
+  })
   const updateSegmentRegion = (id: string, part: number, region: Region) => setProject(p => ({ ...p, segments: p.segments.map(segment => {
     if (segment.id !== id) return segment
     const regions = segmentRegions(segment).map((item, index) => index === part ? { ...item, region: fitRegion(region) } : item)
@@ -252,7 +256,7 @@ function App() {
       const url = URL.createObjectURL(file)
       audioRef.current?.pause()
       setAudioUrl(url)
-      setProject(p => ({ ...p, source: { ...p.source, audio: file.name, audioUrl: data.url }, audioDuration: data.duration || null, flags: [], segments: p.segments.map((segment, index) => ({ ...segment, startTime: index * 4, endTime: (index + 1) * 4 })) }))
+      setProject(p => ({ ...p, source: { ...p.source, audio: file.name, audioUrl: data.url }, audioDuration: data.duration || null, flags: [], segments: p.segments.map((segment, index) => ({ ...segment, startTime: index * 4, endTime: (index + 1) * 4, timingSet: false })) }))
       selectOne(null); setTime(0); setDuration(data.duration || 0); setPlaying(false)
       if (audioRef.current) { audioRef.current.src = url; audioRef.current.load() }
       flash(replacing ? '已替换音频，请重新打点校准时间' : '音频已载入，可以开始播放')
@@ -266,9 +270,9 @@ function App() {
     const flags = visibleFlags
     if (!audioRef.current || !project.source.audio) { flash('请先导入音频'); return }
     if (!ordered.length) { flash('先为乐句放好标注区域'); return }
-    if (flags.some(flag => flag.kind === 'end')) { flash('所有乐句都已打点完成'); return }
+    if (flags.some(flag => flag.kind === 'end') && nextUnmarkedIndex < 0) { flash('所有乐句都已打点完成'); return }
 
-    const nextFlags: KaraokeFlag[] = flags.map(flag => ({ ...flag }))
+    const nextFlags: KaraokeFlag[] = flags.filter(flag => flag.kind !== 'end').map(flag => ({ ...flag }))
     const index = nextUnmarkedIndex < 0 ? ordered.length : nextUnmarkedIndex
     const following = ordered.slice(index + 1).find(segment => markedSegments.has(segment.id))
     if (following && at >= following.startTime) { flash('这个时间已晚于后面已打点的乐句，请先定位到正确位置'); return }
@@ -276,7 +280,7 @@ function App() {
       const first = ordered[0]
       nextFlags.forEach(flag => { if (flag.kind === 'start') flag.kind = 'transition' })
       nextFlags.unshift({ id: `flag-${Date.now()}`, time: at, segmentId: first.id, kind: 'start' })
-      setProject(p => ({ ...p, flags: nextFlags, segments: p.segments.map((s, i) => i === 0 ? { ...s, startTime: at, endTime: Math.max(s.endTime, at + 1) } : s) }))
+      setProject(p => sortSegmentsByTiming({ ...p, flags: nextFlags, segments: p.segments.map((s, i) => i === 0 ? { ...s, startTime: at, endTime: Math.max(s.endTime, at + 1), timingSet: true } : s) }))
       selectOne(first.id)
       const pageIndex = project.pages.findIndex(page => page.id === first.pageId); if (pageIndex >= 0) setActivePage(pageIndex)
       flash(`已打点 ${formatTime(at)} · 第 1 句开始`)
@@ -286,14 +290,15 @@ function App() {
     const previous = ordered[index - 1]
     if (!previous || at <= previous.startTime) { flash('这个标记早于当前乐句的开始位置'); return }
     const next = ordered[index]
-    const keepPreviousEnd = following != null || flags.some(flag => flag.segmentId === previous.id && flag.id.startsWith('recovered-'))
+    const keepPreviousEnd = following != null || flags.some(flag => flag.segmentId === previous.id && (flag.kind === 'end' || flag.id.startsWith('recovered-')))
     nextFlags.push({ id: `flag-${Date.now()}`, time: at, segmentId: next?.id || previous.id, kind: next ? 'transition' : 'end' })
-    setProject(p => ({
+    nextFlags.sort((a, b) => a.time - b.time)
+    setProject(p => sortSegmentsByTiming({
       ...p,
       flags: nextFlags,
       segments: p.segments.map((s, i) => i === index - 1
         ? keepPreviousEnd ? s : { ...s, endTime: at }
-        : i === index ? { ...s, startTime: at, endTime: Math.max(s.endTime, at + 1) } : s),
+        : i === index ? { ...s, startTime: at, endTime: Math.max(s.endTime, at + 1), timingSet: true } : s),
     }))
     if (next) {
       selectOne(next.id)
@@ -382,7 +387,7 @@ function App() {
         region: regions[0].region, regions: regions.length > 1 ? regions : undefined,
         startTime: single ? source.endTime : 0,
         endTime: single ? source.endTime + (source.endTime - source.startTime) : 4,
-        text: undefined }
+        timingSet: false, text: undefined }
     })
     const lastIndex = project.segments.reduce((last, segment, index) => selectedIds.includes(segment.id) ? index : last, -1)
     lastHistoryAt.current = 0
@@ -461,7 +466,7 @@ function App() {
       const ordered = chosen.map((candidate, index): Segment => {
         const match = existing.find(segment => !used.has(segment.id) && segment.pageId === candidate.pageId && intersects(segment.region, candidate.region) > .45)
         if (match) { used.add(match.id); return match }
-        return { id: `box-${Date.now()}-${index}`, pageId: candidate.pageId, region: fitRegion(candidate.region), startTime: index * 4, endTime: (index + 1) * 4, direction: 'left-to-right' }
+        return { id: `box-${Date.now()}-${index}`, pageId: candidate.pageId, region: fitRegion(candidate.region), startTime: index * 4, endTime: (index + 1) * 4, timingSet: false, direction: 'left-to-right' }
       })
       const unmatched = existing.filter(segment => !used.has(segment.id))
       const segments = !replace && previous.flags?.length
@@ -512,11 +517,11 @@ function App() {
           const overlap = Math.max(0, bottom - top) / Math.min(segment.region.height, candidate.region.height)
           return overlap > .28 && segment.region.height <= candidate.region.height * 2 && Math.abs(segment.region.x + segment.region.width / 2 - cx) < .25
         }).sort((a, b) => Math.abs(a.region.y + a.region.height / 2 - cy) - Math.abs(b.region.y + b.region.height / 2 - cy))[0]
-        if (!existing) return { id: `auto-${Date.now()}-${index}`, pageId: candidate.pageId, region: fitRegion(candidate.region), startTime: candidate.startTime, endTime: candidate.endTime, direction: 'left-to-right', text: candidate.text }
+        if (!existing) return { id: `auto-${Date.now()}-${index}`, pageId: candidate.pageId, region: fitRegion(candidate.region), startTime: candidate.startTime, endTime: candidate.endTime, timingSet: true, direction: 'left-to-right', text: candidate.text }
         used.add(existing.id)
-        return { ...existing, text: candidate.text, startTime: candidate.startTime, endTime: candidate.endTime }
+        return { ...existing, text: candidate.text, startTime: candidate.startTime, endTime: candidate.endTime, timingSet: true }
       })
-      return { ...previous, segments: [...previous.segments.filter(segment => !used.has(segment.id)), ...proposed].sort((a, b) => a.startTime - b.startTime), flags: [] }
+      return sortSegmentsByTiming({ ...previous, segments: [...previous.segments.filter(segment => !used.has(segment.id)), ...proposed], flags: [] })
     })
     setAutoCandidates(null); selectOne(null); setTool('select')
     flash(`已应用 ${chosen.length} 条候选；请重点试听待核对的乐句`)

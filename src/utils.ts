@@ -33,6 +33,17 @@ export function recoverFlagsFromTiming(project: Project): Project {
   return { ...project, flags }
 }
 
+export function sortSegmentsByTiming(project: Project): Project {
+  const timedIds = new Set((project.flags || []).filter(flag => flag.kind !== 'end').map(flag => flag.segmentId))
+  const segments = [...project.segments].sort((a, b) => {
+    const aTimed = a.timingSet === true || timedIds.has(a.id)
+    const bTimed = b.timingSet === true || timedIds.has(b.id)
+    if (aTimed !== bTimed) return aTimed ? -1 : 1
+    return aTimed ? a.startTime - b.startTime : 0
+  })
+  return segments.every((segment, index) => segment === project.segments[index]) ? project : { ...project, segments }
+}
+
 export function formatTime(seconds: number) {
   const safe = Math.max(0, seconds || 0)
   const minutes = Math.floor(safe / 60).toString().padStart(2, '0')
