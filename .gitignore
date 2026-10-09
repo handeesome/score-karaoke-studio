@@ -5,12 +5,9 @@ reference/models/
 reference/vocals/
 __pycache__/
 *.py[cod]
-backend/projects/*/source.pdf
-backend/projects/*/project.json
-backend/projects/*/project-*.json
-backend/media/*
-backend/exports/*
-!backend/media/.gitkeep
+backend/projects/
+backend/media/
+backend/exports/
 *.log
 *.tsbuildinfo
 reference/*.json
