@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
-import { AudioLines, MoreHorizontal, Scissors } from 'lucide-react'
+import { AudioLines } from 'lucide-react'
 import type { Segment } from '../types'
 
 interface WaveformData {
@@ -18,7 +18,6 @@ interface TimelinePanelProps {
   time: number
   onSelect: (id: string) => void
   onSeek: (time: number) => void
-  onDuplicate: () => void
 }
 
 function clock(seconds: number): string {
@@ -34,8 +33,7 @@ function envelopePath(values: number[]): string {
   return `M0,50 L${upper} L${width},50 L${lower} Z`
 }
 
-export default function TimelinePanel({ audioUrl, audioName, duration, segments, selected, time, onSelect, onSeek, onDuplicate }: TimelinePanelProps) {
-  const [waveMode, setWaveMode] = useState<'vocals' | 'mix'>('vocals')
+export default function TimelinePanel({ audioUrl, audioName, duration, segments, selected, time, onSelect, onSeek }: TimelinePanelProps) {
   const [waveform, setWaveform] = useState<WaveformData | null>(null)
   const [loading, setLoading] = useState(false)
   const [stage, setStage] = useState('')
@@ -48,25 +46,23 @@ export default function TimelinePanel({ audioUrl, audioName, duration, segments,
     if (!audioUrl) { setLoading(false); return }
     const controller = new AbortController()
     setLoading(true)
-    setStage(waveMode === 'vocals' ? '正在准备人声波形…' : '正在生成原音频波形…')
+    setStage('正在准备人声波形…')
     const load = async () => {
-      const response = await fetch(waveMode === 'vocals' ? '/api/waveform/vocals' : '/api/waveform', {
+      const response = await fetch('/api/waveform/vocals', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ audioUrl }), signal: controller.signal,
       })
       let result = await response.json()
       if (!response.ok) throw new Error(result.detail || '无法读取音频波形')
-      if (waveMode === 'vocals') {
-        while (result.status === 'queued' || result.status === 'running') {
-          setStage(result.stage || '正在提取人声…')
-          await new Promise(resolve => window.setTimeout(resolve, 1500))
-          if (controller.signal.aborted) return
-          const status = await fetch(`/api/waveform/vocals/${result.jobId}`, { signal: controller.signal })
-          result = await status.json()
-          if (!status.ok) throw new Error(result.detail || '无法读取人声提取进度')
-        }
-        if (result.status === 'failed') throw new Error(result.error || '人声提取失败')
-        result = result.waveform
+      while (result.status === 'queued' || result.status === 'running') {
+        setStage(result.stage || '正在提取人声…')
+        await new Promise(resolve => window.setTimeout(resolve, 1500))
+        if (controller.signal.aborted) return
+        const status = await fetch(`/api/waveform/vocals/${result.jobId}`, { signal: controller.signal })
+        result = await status.json()
+        if (!status.ok) throw new Error(result.detail || '无法读取人声提取进度')
       }
+      if (result.status === 'failed') throw new Error(result.error || '人声提取失败')
+      result = result.waveform
       const data = result as WaveformData
       if (!data?.levels?.length || data.peaks?.length !== data.levels.length) throw new Error('波形数据无效')
       if (!controller.signal.aborted) setWaveform(data)
@@ -74,7 +70,7 @@ export default function TimelinePanel({ audioUrl, audioName, duration, segments,
     void load().catch(reason => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : '波形读取失败') })
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
-  }, [audioUrl, waveMode])
+  }, [audioUrl])
 
   const extent = duration > 0 ? duration : waveform?.duration || 90
   const peakPath = useMemo(() => envelopePath(waveform?.peaks || []), [waveform])
@@ -107,12 +103,7 @@ export default function TimelinePanel({ audioUrl, audioName, duration, segments,
 
   return <div className="timeline-panel">
     <div className="timeline-heading">
-      <div><span className="eyebrow">时间轴</span><strong>{waveMode === 'vocals' ? '人声波形' : '原音频波形'}</strong><span className="waveform-caveat">{waveMode === 'vocals' ? '提取后显示歌声起落 · 点击或拖动定位' : '含伴奏 · 点击或拖动定位'}</span></div>
-      <div className="timeline-tools">
-        <button className="button button-quiet compact" disabled={!audioUrl} onClick={() => setWaveMode(mode => mode === 'vocals' ? 'mix' : 'vocals')}>{waveMode === 'vocals' ? '查看原音频' : '提取人声'}</button>
-        <button className="button button-quiet compact" onClick={onDuplicate}><Scissors size={14}/>复制到下一行</button>
-        <button className="icon-button tiny" aria-label="更多时间轴操作"><MoreHorizontal size={16}/></button>
-      </div>
+      <div><span className="eyebrow">时间轴</span><strong>人声波形</strong><span className="waveform-caveat">点击或拖动定位</span></div>
     </div>
     <div className="timeline-track">
       <div className="timeline-ruler">{ticks.map((tick, index) => <span key={index}>{tick}</span>)}</div>
