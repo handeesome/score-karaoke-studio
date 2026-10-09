@@ -142,7 +142,6 @@ body{min-width:0;height:100dvh;overflow:hidden}
   .right-panel{padding:12px 11px 8px}
   .right-panel-title{padding-bottom:10px}
   .inspector-empty{padding-top:24px}
-  .tip-card{padding:7px;margin-bottom:5px}
 }
 @media(max-height:590px){
   .topbar{height:46px;min-height:46px}
@@ -154,7 +153,6 @@ body{min-width:0;height:100dvh;overflow:hidden}
   .transport-panel{height:44px;min-height:44px}
   .right-panel-title{padding-bottom:6px}
   .inspector-card{padding:8px}
-  .inspector-bottom{display:none}
 }
 @media(max-width:1180px){
   .main-layout{grid-template-columns:minmax(0,1fr) 230px}
