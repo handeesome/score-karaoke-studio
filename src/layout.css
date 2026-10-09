@@ -179,6 +179,8 @@ body{min-width:0;height:100dvh;overflow:hidden}
 .waveform-levels{fill:#6e9977;opacity:.9}
 .waveform-placeholder{position:absolute;inset:22px 0 0;display:grid;place-items:center;color:#9ca79c;font-size:10px;pointer-events:none}
 .wave-stage .timeline-block{z-index:2}
+.wave-stage .timeline-block{cursor:grab;touch-action:none;user-select:none}
+.wave-stage .timeline-block:active{cursor:grabbing}
 .wave-stage .timeline-cursor{z-index:3}
 .region-number-bg{fill:#fff;stroke:#55775e;stroke-width:2;vector-effect:non-scaling-stroke}
 .region-number-text{fill:#385844;font-family:'Noto Sans SC',sans-serif;font-size:17px;font-weight:700}
