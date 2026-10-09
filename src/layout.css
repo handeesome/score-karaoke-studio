@@ -232,6 +232,11 @@ body{min-width:0;height:100dvh;overflow:hidden}
 .inspector-merge .field-label{margin:0}
 .inspector-merge select{width:100%;height:31px;padding:0 8px;border:1px solid #e8e9e3;border-radius:5px;background:#fff;color:#4e5149;font-size:10px}
 .inspector-merge .button{width:100%;height:29px;justify-content:center;font-size:10px}
+.inspector-order{margin:3px 0 9px}
+.inspector-order .field-label{margin:0 0 5px}
+.inspector-order>div{display:flex;gap:7px}
+.inspector-order input{width:0;min-width:0;flex:1;height:29px;padding:0 8px;border:1px solid #e8e9e3;border-radius:5px;background:#fff;color:#4e5149;font-size:10px}
+.inspector-order .button{height:29px;padding:0 10px;font-size:10px}
 
 .transport-panel{grid-column:1/-1;grid-row:2;padding:0 18px}
 .timeline-panel{grid-column:1/-1;grid-row:3;height:auto;min-height:0;padding:7px 18px 12px;display:flex;flex-direction:column}
