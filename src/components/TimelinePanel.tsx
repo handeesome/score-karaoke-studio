@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type MouseEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
 import { AudioLines, MoreHorizontal, Scissors } from 'lucide-react'
 import type { Segment } from '../types'
 
@@ -40,6 +40,7 @@ export default function TimelinePanel({ audioUrl, audioName, duration, segments,
   const [loading, setLoading] = useState(false)
   const [stage, setStage] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const draggingPointer = useRef<number | null>(null)
 
   useEffect(() => {
     setWaveform(null)
@@ -80,15 +81,33 @@ export default function TimelinePanel({ audioUrl, audioName, duration, segments,
   const levelPath = useMemo(() => envelopePath(waveform?.levels || []), [waveform])
   const ticks = Array.from({ length: 6 }, (_, index) => clock(extent * index / 5))
 
-  const seekAt = (event: MouseEvent<HTMLDivElement>) => {
-    if (!audioName) return
+  const seekAt = (event: PointerEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.getBoundingClientRect()
     onSeek(Math.max(0, Math.min(extent, (event.clientX - rect.left) / rect.width * extent)))
   }
 
+  const startSeek = (event: PointerEvent<HTMLDivElement>) => {
+    if (!audioName || !event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return
+    if ((event.target as Element).closest('.timeline-block')) return
+    draggingPointer.current = event.pointerId
+    event.currentTarget.setPointerCapture(event.pointerId)
+    seekAt(event)
+  }
+
+  const moveSeek = (event: PointerEvent<HTMLDivElement>) => {
+    if (draggingPointer.current === event.pointerId) seekAt(event)
+  }
+
+  const endSeek = (event: PointerEvent<HTMLDivElement>) => {
+    if (draggingPointer.current !== event.pointerId) return
+    seekAt(event)
+    draggingPointer.current = null
+    event.currentTarget.releasePointerCapture(event.pointerId)
+  }
+
   return <div className="timeline-panel">
     <div className="timeline-heading">
-      <div><span className="eyebrow">时间轴</span><strong>{waveMode === 'vocals' ? '人声波形' : '原音频波形'}</strong><span className="waveform-caveat">{waveMode === 'vocals' ? '提取后显示歌声起落 · 点击跳转' : '含伴奏 · 点击跳转'}</span></div>
+      <div><span className="eyebrow">时间轴</span><strong>{waveMode === 'vocals' ? '人声波形' : '原音频波形'}</strong><span className="waveform-caveat">{waveMode === 'vocals' ? '提取后显示歌声起落 · 点击或拖动定位' : '含伴奏 · 点击或拖动定位'}</span></div>
       <div className="timeline-tools">
         <button className="button button-quiet compact" disabled={!audioUrl} onClick={() => setWaveMode(mode => mode === 'vocals' ? 'mix' : 'vocals')}>{waveMode === 'vocals' ? '查看原音频' : '提取人声'}</button>
         <button className="button button-quiet compact" onClick={onDuplicate}><Scissors size={14}/>复制到下一行</button>
@@ -99,7 +118,7 @@ export default function TimelinePanel({ audioUrl, audioName, duration, segments,
       <div className="timeline-ruler">{ticks.map((tick, index) => <span key={index}>{tick}</span>)}</div>
       <div className="wave-track">
         <div className="wave-label" title={audioName || '未导入音频'}><AudioLines size={13}/><span>{audioName || '未导入音频'}</span></div>
-        <div className="wave-stage" onClick={seekAt} role="slider" aria-label="音频时间轴，点击跳转" aria-valuemin={0} aria-valuemax={Math.round(extent)} aria-valuenow={Math.round(time)} tabIndex={audioName ? 0 : -1} onKeyDown={event => { if (event.key === 'ArrowLeft') { event.preventDefault(); onSeek(Math.max(0, time - 1)) } else if (event.key === 'ArrowRight') { event.preventDefault(); onSeek(Math.min(extent, time + 1)) } }}>
+        <div className="wave-stage" onPointerDown={startSeek} onPointerMove={moveSeek} onPointerUp={endSeek} onPointerCancel={event => { if (draggingPointer.current === event.pointerId) draggingPointer.current = null }} onLostPointerCapture={() => { draggingPointer.current = null }} role="slider" aria-label="音频时间轴，点击或拖动定位" aria-valuemin={0} aria-valuemax={Math.round(extent)} aria-valuenow={Math.round(time)} tabIndex={audioName ? 0 : -1} onKeyDown={event => { if (event.key === 'ArrowLeft') { event.preventDefault(); onSeek(Math.max(0, time - 1)) } else if (event.key === 'ArrowRight') { event.preventDefault(); onSeek(Math.min(extent, time + 1)) } }}>
           {waveform && <svg className="waveform-svg" viewBox={`0 0 ${waveform.levels.length} 100`} preserveAspectRatio="none" aria-hidden="true"><path d={peakPath} className="waveform-peaks"/><path d={levelPath} className="waveform-levels"/></svg>}
           {!waveform && <div className="waveform-placeholder">{loading ? stage : error || '导入 MP3 后显示人声波形'}</div>}
           {segments.map((segment, index) => <button key={segment.id} className={`timeline-block ${selected === segment.id ? 'current' : ''}`} style={{ left: `${Math.max(0, Math.min(100, segment.startTime / extent * 100))}%`, width: `${Math.max(0, Math.min(100, segment.endTime / extent * 100) - Math.max(0, segment.startTime / extent * 100))}%` }} title={`乐句 ${index + 1} · ${clock(segment.startTime)}–${clock(segment.endTime)}`} onClick={event => { event.stopPropagation(); onSelect(segment.id) }}>乐句 {String(index + 1).padStart(2, '0')}</button>)}

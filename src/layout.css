@@ -171,7 +171,7 @@ body{min-width:0;height:100dvh;overflow:hidden}
 /* The waveform, phrase blocks and playhead share the same audio-time origin. */
 .timeline-ruler{padding-right:8px}
 .waveform-caveat{font-size:9px;color:#8e958b;white-space:nowrap}
-.wave-stage{position:absolute;left:104px;right:8px;top:0;bottom:0;cursor:crosshair;background-image:repeating-linear-gradient(to right,transparent 0,transparent calc(20% - 1px),#e8ece5 calc(20% - 1px),#e8ece5 20%)}
+.wave-stage{position:absolute;left:104px;right:8px;top:0;bottom:0;cursor:ew-resize;touch-action:none;user-select:none;background-image:repeating-linear-gradient(to right,transparent 0,transparent calc(20% - 1px),#e8ece5 calc(20% - 1px),#e8ece5 20%)}
 .wave-stage:focus-visible{outline:2px solid #7a9a7e;outline-offset:-2px}
 .waveform-svg{position:absolute;left:0;right:0;top:19px;width:100%;height:calc(100% - 23px);overflow:visible;pointer-events:none}
 .waveform-peaks{fill:#c4d5c5;opacity:.8}
