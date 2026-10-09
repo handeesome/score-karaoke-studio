@@ -16,10 +16,16 @@ class NormalizedRegion(BaseModel):
         return self
 
 
+class SegmentRegion(BaseModel):
+    pageId: str
+    region: NormalizedRegion
+
+
 class ProjectSegment(BaseModel):
     id: str
     pageId: str
     region: NormalizedRegion
+    regions: list[SegmentRegion] | None = None
     startTime: float = Field(ge=0)
     endTime: float = Field(gt=0)
     direction: str = "left-to-right"
@@ -28,6 +34,8 @@ class ProjectSegment(BaseModel):
     def valid_times(self):
         if self.startTime >= self.endTime:
             raise ValueError("片段结束时间必须晚于开始时间")
+        if self.regions is not None and not self.regions:
+            raise ValueError("合并乐句至少需要一个标注框")
         return self
 
 
@@ -46,6 +54,6 @@ class ProjectDocument(BaseModel):
     @model_validator(mode="after")
     def valid_segment_pages(self):
         page_ids = {page.get("id") for page in self.pages}
-        if any(segment.pageId not in page_ids for segment in self.segments):
+        if any(part.pageId not in page_ids for segment in self.segments for part in (segment.regions or [SegmentRegion(pageId=segment.pageId, region=segment.region)])):
             raise ValueError("片段引用了不存在的乐谱页")
         return self

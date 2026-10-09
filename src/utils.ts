@@ -1,4 +1,19 @@
-import type { Project, Segment } from './types'
+import type { Project, Segment, SegmentRegion } from './types'
+
+export function segmentRegions(segment: Segment): SegmentRegion[] {
+  return segment.regions?.length ? segment.regions : [{ pageId: segment.pageId, region: segment.region }]
+}
+
+export function regionReveal(regions: SegmentRegion[], progress: number): number[] {
+  const widths = regions.map(item => Math.max(.001, item.region.width))
+  const total = widths.reduce((sum, width) => sum + width, 0)
+  let distance = Math.max(0, Math.min(1, progress)) * total
+  return widths.map(width => {
+    const fraction = Math.max(0, Math.min(1, distance / width))
+    distance -= width
+    return fraction
+  })
+}
 
 export function formatTime(seconds: number) {
   const safe = Math.max(0, seconds || 0)

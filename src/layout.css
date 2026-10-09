@@ -24,6 +24,8 @@ body{min-width:0;height:100dvh;overflow:hidden}
 .flag-tick{position:absolute;z-index:2;top:-1px;width:3px;height:6px;padding:0;transform:translateX(-50%);border:0;border-radius:1px;background:#c5a73e;cursor:pointer}
 .flag-tick:hover{height:9px;background:#947919}
 .score-page.anchoring{cursor:crosshair}
+.score-page.marquee-mode{cursor:crosshair}
+.marquee-region{fill:#759c76;fill-opacity:.16;stroke:#426b4e;stroke-width:2;stroke-dasharray:7 4;vector-effect:non-scaling-stroke;pointer-events:none}
 .score-page.previewing .region-outline,.score-page.previewing .resize-handle,.score-page.previewing .resize-edge,.score-page.previewing .region-label{display:none}
 .score-page.previewing .annotation{pointer-events:none}
 .yellow-swatch{border-color:#de4b2d;background:#de4b2d}

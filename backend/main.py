@@ -139,19 +139,21 @@ def validate_project(project: dict):
     for index, segment in enumerate(segments, start=1):
         label = f"第 {index} 句"
         start, end = float(segment.get("startTime", -1)), float(segment.get("endTime", -1))
-        region = segment.get("region", {})
-        if segment.get("pageId") not in page_ids:
-            errors.append(f"{label}引用了不存在的乐谱页")
+        regions = segment.get("regions") or [{"pageId": segment.get("pageId"), "region": segment.get("region", {})}]
         if start < 0 or end <= start:
             errors.append(f"{label}的结束时间必须晚于开始时间")
         if duration and end > duration + 0.05:
             errors.append(f"{label}超出音频时长")
-        try:
-            x, y, w, h = (float(region[key]) for key in ("x", "y", "width", "height"))
-            if min(x, y, w, h) < 0 or w <= 0 or h <= 0 or x + w > 1.000001 or y + h > 1.000001:
-                errors.append(f"{label}的标注区域超出页面范围")
-        except (KeyError, TypeError, ValueError):
-            errors.append(f"{label}缺少有效的标注区域")
+        for part in regions:
+            region = part.get("region", {})
+            if part.get("pageId") not in page_ids:
+                errors.append(f"{label}引用了不存在的乐谱页")
+            try:
+                x, y, w, h = (float(region[key]) for key in ("x", "y", "width", "height"))
+                if min(x, y, w, h) < 0 or w <= 0 or h <= 0 or x + w > 1.000001 or y + h > 1.000001:
+                    errors.append(f"{label}的标注区域超出页面范围")
+            except (KeyError, TypeError, ValueError):
+                errors.append(f"{label}缺少有效的标注区域")
     for previous, current in zip(segments, segments[1:]):
         gap = float(current["startTime"]) - float(previous["endTime"])
         if gap < -0.05:
