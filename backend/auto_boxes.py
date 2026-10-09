@@ -1,5 +1,6 @@
 """Suggest lyric rectangles from OCR rows and unusually wide blank spaces."""
 
+from math import ceil
 from pathlib import Path
 
 import numpy as np
@@ -43,17 +44,30 @@ def suggest_boxes(pages: list[dict], media_dir: Path) -> list[dict]:
         image_height, image_width = gray.shape
         region = row["region"]
         center = region["y"] + region["height"] / 2
-        other_centers = [abs(value - center) for value in page_centers[row["pageId"]] if abs(value - center) > .001]
+        centers = page_centers[row["pageId"]]
+        above = [value for value in centers if value < center - .001]
+        below = [value for value in centers if value > center + .001]
+        other_centers = [abs(value - center) for value in centers if abs(value - center) > .001]
         nearest = min(other_centers) if other_centers else 1.0
-        height = min(region["height"], nearest * .72)
+        scan_height = min(region["height"], nearest * .72)
         x_start, x_end = page_bounds[row["pageId"]]
         left = max(0, int(x_start * image_width))
         right = min(image_width, int(x_end * image_width))
-        top = max(0, int((center - height / 2) * image_height))
-        bottom = min(image_height, int((center + height / 2) * image_height))
-        crop = gray[top:bottom, left:right]
+        scan_top = max(0, int((center - scan_height / 2) * image_height))
+        scan_bottom = min(image_height, int((center + scan_height / 2) * image_height))
+        crop = gray[scan_top:scan_bottom, left:right]
         if crop.size == 0:
             continue
+        # The narrow scan band is only for finding horizontal gaps. Keep the
+        # full OCR row in the final box so its upper strokes are not clipped.
+        upper_limit = (max(above) + center) / 2 if above else 0.0
+        lower_limit = (min(below) + center) / 2 if below else 1.0
+        row_top = region["y"]
+        row_bottom = row_top + region["height"]
+        padded_top = max(upper_limit, row_top - region["height"] * .12)
+        padded_bottom = min(lower_limit, row_bottom + region["height"] * .06)
+        box_top = max(0, int(min(row_top, padded_top) * image_height))
+        box_bottom = min(image_height, ceil(max(row_bottom, padded_bottom) * image_height))
         # The row comes from Chinese OCR. A wide gap is meaningful only relative
         # to the text height; normal spacing between individual characters stays.
         ink = np.count_nonzero(crop < 150, axis=0) >= max(2, round(crop.shape[0] * .06))
@@ -89,8 +103,8 @@ def suggest_boxes(pages: list[dict], media_dir: Path) -> list[dict]:
                 continue
             boxes.append({
                 "pageId": row["pageId"],
-                "region": {"x": x0 / image_width, "y": top / image_height,
-                           "width": (x1 - x0) / image_width, "height": (bottom - top) / image_height},
+                "region": {"x": x0 / image_width, "y": box_top / image_height,
+                           "width": (x1 - x0) / image_width, "height": (box_bottom - box_top) / image_height},
                 "sourceText": row["text"], "row": row_index + 1, "part": part,
             })
     if not boxes:
