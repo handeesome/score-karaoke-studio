@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
-import { AudioLines, ZoomIn, ZoomOut } from 'lucide-react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
+import { AudioLines } from 'lucide-react'
 import type { Segment } from '../types'
 
 interface WaveformData {
@@ -35,18 +35,18 @@ function envelopePath(values: number[]): string {
   return `M0,50 L${upper} L${width},50 L${lower} Z`
 }
 
-const zoomSteps = [1, 1.5, 2, 3, 4, 6, 8]
-
 export default function TimelinePanel({ audioUrl, audioName, duration, segments, selected, time, playing, onSelect, onSeek, onMoveSegment }: TimelinePanelProps) {
   const [waveform, setWaveform] = useState<WaveformData | null>(null)
   const [loading, setLoading] = useState(false)
   const [stage, setStage] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const [zoomStep, setZoomStep] = useState(0)
+  const [zoom, setZoom] = useState(1)
   const [draggedSegment, setDraggedSegment] = useState<{ id: string; startTime: number; endTime: number } | null>(null)
   const draggingPointer = useRef<number | null>(null)
   const blockDrag = useRef<{ pointerId: number; id: string; startX: number; startTime: number; endTime: number; width: number; moved: boolean } | null>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const zoomAnchor = useRef<{ fraction: number; offset: number } | null>(null)
 
   useEffect(() => {
     setWaveform(null)
@@ -81,24 +81,48 @@ export default function TimelinePanel({ audioUrl, audioName, duration, segments,
   }, [audioUrl])
 
   const extent = duration > 0 ? duration : waveform?.duration || 90
-  const zoom = zoomSteps[zoomStep]
   const peakPath = useMemo(() => envelopePath(waveform?.peaks || []), [waveform])
   const levelPath = useMemo(() => envelopePath(waveform?.levels || []), [waveform])
   const tickCount = Math.round(5 * zoom)
   const ticks = Array.from({ length: tickCount + 1 }, (_, index) => clock(extent * index / tickCount))
 
   useEffect(() => {
+    const panel = panelRef.current
+    if (!panel) return
+    const wheelZoom = (event: WheelEvent) => {
+      if (!event.deltaY || Math.abs(event.deltaX) > Math.abs(event.deltaY) || blockDrag.current || draggingPointer.current !== null) return
+      event.preventDefault()
+      const scroller = scrollRef.current
+      if (!scroller) return
+      const rect = scroller.getBoundingClientRect()
+      const offset = Math.max(0, Math.min(scroller.clientWidth, event.clientX - rect.left))
+      const fraction = Math.max(0, Math.min(1, (scroller.scrollLeft + offset) / scroller.scrollWidth))
+      const pixels = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? window.innerHeight : 1)
+      setZoom(previous => {
+        const next = Math.max(1, Math.min(8, previous * Math.exp(-pixels * .0015)))
+        if (Math.abs(next - previous) < .001) return previous
+        zoomAnchor.current = { fraction, offset }
+        return next
+      })
+    }
+    panel.addEventListener('wheel', wheelZoom, { passive: false })
+    return () => panel.removeEventListener('wheel', wheelZoom)
+  }, [])
+
+  useLayoutEffect(() => {
     const scroller = scrollRef.current
-    if (scroller) scroller.scrollLeft = time / extent * scroller.scrollWidth - scroller.clientWidth / 2
-  }, [zoomStep])
+    const anchor = zoomAnchor.current
+    if (scroller && anchor) scroller.scrollLeft = anchor.fraction * scroller.scrollWidth - anchor.offset
+    zoomAnchor.current = null
+  }, [zoom])
 
   useEffect(() => {
     const scroller = scrollRef.current
-    if (!playing || !scroller || zoomStep === 0 || blockDrag.current) return
+    if (!playing || !scroller || zoom === 1 || blockDrag.current) return
     const cursor = time / extent * scroller.scrollWidth
     if (cursor > scroller.scrollLeft + scroller.clientWidth * .78) scroller.scrollLeft = cursor - scroller.clientWidth * .78
     if (cursor < scroller.scrollLeft + scroller.clientWidth * .18) scroller.scrollLeft = cursor - scroller.clientWidth * .18
-  }, [time, playing, zoomStep, extent])
+  }, [time, playing, zoom, extent])
 
   const seekAt = (event: PointerEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.getBoundingClientRect()
@@ -160,11 +184,7 @@ export default function TimelinePanel({ audioUrl, audioName, duration, segments,
     event.currentTarget.releasePointerCapture(event.pointerId)
   }
 
-  return <div className="timeline-panel">
-    <div className="timeline-heading">
-      <div><span className="eyebrow">时间轴</span><strong>人声波形</strong><span className="waveform-caveat">点击或拖动定位</span></div>
-      <div className="timeline-zoom"><button className="icon-button tiny" aria-label="缩小时间轴" title="缩小时间轴" disabled={zoomStep === 0} onClick={() => setZoomStep(step => step - 1)}><ZoomOut size={15}/></button><button className="timeline-zoom-value" title="恢复时间轴原始比例" onClick={() => setZoomStep(0)}>{Math.round(zoom * 100)}%</button><button className="icon-button tiny" aria-label="放大时间轴" title="放大时间轴" disabled={zoomStep === zoomSteps.length - 1} onClick={() => setZoomStep(step => step + 1)}><ZoomIn size={15}/></button></div>
-    </div>
+  return <div className="timeline-panel" ref={panelRef} aria-label="人声波形时间轴，滚轮缩放">
     <div className="timeline-track">
       <div className="wave-label" title={audioName || '未导入音频'}><AudioLines size={13}/><span>{audioName || '未导入音频'}</span></div>
       <div className="timeline-scroll" ref={scrollRef}>
