@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
 import { AudioLines } from 'lucide-react'
-import type { Segment } from '../types'
+import type { KaraokeFlag, Segment } from '../types'
 
 interface WaveformData {
   duration: number
@@ -13,6 +13,7 @@ interface TimelinePanelProps {
   audioUrl?: string | null
   audioName?: string | null
   duration: number
+  flags: KaraokeFlag[]
   segments: Segment[]
   selected: string | null
   time: number
@@ -35,7 +36,7 @@ function envelopePath(values: number[]): string {
   return `M0,50 L${upper} L${width},50 L${lower} Z`
 }
 
-export default function TimelinePanel({ audioUrl, audioName, duration, segments, selected, time, playing, onSelect, onSeek, onMoveSegment }: TimelinePanelProps) {
+export default function TimelinePanel({ audioUrl, audioName, duration, flags, segments, selected, time, playing, onSelect, onSeek, onMoveSegment }: TimelinePanelProps) {
   const [waveform, setWaveform] = useState<WaveformData | null>(null)
   const [loading, setLoading] = useState(false)
   const [stage, setStage] = useState('')
@@ -81,6 +82,7 @@ export default function TimelinePanel({ audioUrl, audioName, duration, segments,
   }, [audioUrl])
 
   const extent = duration > 0 ? duration : waveform?.duration || 90
+  const progress = Math.max(0, Math.min(100, time / extent * 100))
   const peakPath = useMemo(() => envelopePath(waveform?.peaks || []), [waveform])
   const levelPath = useMemo(() => envelopePath(waveform?.levels || []), [waveform])
   const tickCount = Math.round(5 * zoom)
@@ -131,7 +133,7 @@ export default function TimelinePanel({ audioUrl, audioName, duration, segments,
 
   const startSeek = (event: PointerEvent<HTMLDivElement>) => {
     if (!audioName || !event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return
-    if ((event.target as Element).closest('.timeline-block')) return
+    if ((event.target as Element).closest('.timeline-block, .flag-tick')) return
     draggingPointer.current = event.pointerId
     event.currentTarget.setPointerCapture(event.pointerId)
     seekAt(event)
@@ -189,6 +191,7 @@ export default function TimelinePanel({ audioUrl, audioName, duration, segments,
       <div className="wave-label" title={audioName || '未导入音频'}><AudioLines size={13}/><span>{audioName || '未导入音频'}</span></div>
       <div className="timeline-scroll" ref={scrollRef}>
         <div className="timeline-content" style={{ width: `${zoom * 100}%` }}>
+          <div className="timeline-progress" onPointerDown={startSeek} onPointerMove={moveSeek} onPointerUp={endSeek} onPointerCancel={event => { if (draggingPointer.current === event.pointerId) draggingPointer.current = null }} onLostPointerCapture={() => { draggingPointer.current = null }}><div className="timeline-progress-fill" style={{ width: `${progress}%` }}/>{flags.map(flag => <button key={flag.id} className="flag-tick" style={{ left: `${Math.max(0, Math.min(100, flag.time / extent * 100))}%` }} title={`打点 ${clock(flag.time)}`} onClick={event => { event.stopPropagation(); onSeek(flag.time) }}/>) }<div className="timeline-progress-knob" style={{ left: `${progress}%` }}/></div>
           <div className="timeline-ruler">{ticks.map((tick, index) => <span key={index} className={index === 0 ? 'first' : index === tickCount ? 'last' : undefined} style={{ left: `${index / tickCount * 100}%` }}>{tick}</span>)}</div>
           <div className="wave-track">
             <div className="wave-stage" style={{ backgroundSize: `${100 / tickCount}% 100%` }} onPointerDown={startSeek} onPointerMove={moveSeek} onPointerUp={endSeek} onPointerCancel={event => { if (draggingPointer.current === event.pointerId) draggingPointer.current = null }} onLostPointerCapture={() => { draggingPointer.current = null }} role="slider" aria-label="音频时间轴，点击或拖动定位" aria-valuemin={0} aria-valuemax={Math.round(extent)} aria-valuenow={Math.round(time)} tabIndex={audioName ? 0 : -1} onKeyDown={event => { if (event.key === 'ArrowLeft') { event.preventDefault(); onSeek(Math.max(0, time - 1)) } else if (event.key === 'ArrowRight') { event.preventDefault(); onSeek(Math.min(extent, time + 1)) } }}>
