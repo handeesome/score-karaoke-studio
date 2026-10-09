@@ -14,7 +14,7 @@ function Test-Backend {
 
 function Test-Frontend {
     try {
-        $page = Invoke-WebRequest -Uri $frontendUrl -TimeoutSec 2
+        $page = Invoke-WebRequest -Uri $frontendUrl -TimeoutSec 2 -UseBasicParsing
         return $page.Content -like '*谱间 · 歌谱同步工作台*'
     } catch { return $false }
 }
