@@ -194,7 +194,8 @@ body{min-width:0;height:100dvh;overflow:hidden}
 .region-number-bg{fill:#fff;stroke:#55775e;stroke-width:2;vector-effect:non-scaling-stroke}
 .region-number{cursor:text}
 .region-number-editor{overflow:visible}
-.region-number-editor input{width:100%;height:100%;padding:0 2px;border:2px solid #496d58;border-radius:5px;background:#fff;color:#385844;font-size:18px;font-weight:700;text-align:center;outline:none}
+.region-number-editor input{width:100%;height:100%;padding:0 1px;border:2px solid #496d58;border-radius:5px;background:#496d58;color:#fff;caret-color:#fff;font-size:17px;font-weight:700;text-align:center;outline:none;appearance:none}
+.region-number-editor input::selection{background:transparent;color:#fff}
 .region-number-text{fill:#385844;font-family:'Noto Sans SC',sans-serif;font-size:17px;font-weight:700}
 .annotation.is-selected .region-number-bg{fill:#496d58}
 .annotation.is-selected .region-number-text{fill:#fff}
