@@ -177,7 +177,16 @@ body{min-width:0;height:100dvh;overflow:hidden}
 .waveform-peaks{fill:#c4d5c5;opacity:.8}
 .waveform-levels{fill:#6e9977;opacity:.9}
 .waveform-placeholder{position:absolute;inset:22px 0 0;display:grid;place-items:center;color:#9ca79c;font-size:10px;pointer-events:none}
-.wave-stage .timeline-block{z-index:2;top:5px;height:20px;min-width:52px;padding:0 6px;font-size:10px;font-weight:600;line-height:18px;cursor:grab;touch-action:none;user-select:none}
+.wave-stage .timeline-block{z-index:2;top:5px;height:20px;min-width:8px;padding:0 2px;display:flex;align-items:center;font-size:10px;font-weight:600;line-height:18px;cursor:grab;touch-action:none;user-select:none}
+.wave-stage .timeline-block.current{z-index:4}
+.timeline-block-text{min-width:0;overflow:hidden;white-space:nowrap;pointer-events:none}
+.timeline-resize-grip{display:none;position:absolute;z-index:1;top:0;bottom:0;width:8px;cursor:ew-resize}
+.timeline-block.current .timeline-resize-grip{display:block}
+.timeline-resize-grip.start{left:0}
+.timeline-resize-grip.end{right:0}
+.timeline-resize-grip::after{content:'';position:absolute;top:4px;bottom:4px;width:2px;border-radius:1px;background:#6e9474}
+.timeline-resize-grip.start::after{left:2px}
+.timeline-resize-grip.end::after{right:2px}
 .wave-stage .timeline-block:active{cursor:grabbing}
 .wave-stage .timeline-cursor{z-index:3}
 .region-number-bg{fill:#fff;stroke:#55775e;stroke-width:2;vector-effect:non-scaling-stroke}

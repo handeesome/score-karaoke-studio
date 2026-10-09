@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
 import { AudioLines } from 'lucide-react'
 import type { KaraokeFlag, Segment } from '../types'
+import { formatTime } from '../utils'
 
 interface WaveformData {
   duration: number
@@ -44,7 +45,7 @@ export default function TimelinePanel({ audioUrl, audioName, duration, flags, se
   const [zoom, setZoom] = useState(1)
   const [draggedSegment, setDraggedSegment] = useState<{ id: string; startTime: number; endTime: number } | null>(null)
   const draggingPointer = useRef<number | null>(null)
-  const blockDrag = useRef<{ pointerId: number; id: string; startX: number; startTime: number; endTime: number; width: number; moved: boolean } | null>(null)
+  const blockDrag = useRef<{ pointerId: number; id: string; mode: 'move' | 'start' | 'end'; startX: number; startTime: number; endTime: number; width: number; moved: boolean } | null>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const zoomAnchor = useRef<{ fraction: number; offset: number } | null>(null)
@@ -156,13 +157,25 @@ export default function TimelinePanel({ audioUrl, audioName, duration, flags, se
     onSelect(segment.id)
     const width = event.currentTarget.parentElement?.getBoundingClientRect().width || 0
     if (!width) return
-    blockDrag.current = { pointerId: event.pointerId, id: segment.id, startX: event.clientX, startTime: segment.startTime, endTime: segment.endTime, width, moved: false }
+    const grip = (event.target as Element).closest('.timeline-resize-grip')
+    const mode = grip?.classList.contains('start') ? 'start' : grip?.classList.contains('end') ? 'end' : 'move'
+    blockDrag.current = { pointerId: event.pointerId, id: segment.id, mode, startX: event.clientX, startTime: segment.startTime, endTime: segment.endTime, width, moved: false }
     event.currentTarget.setPointerCapture(event.pointerId)
   }
 
   const blockPosition = (drag: NonNullable<typeof blockDrag.current>, clientX: number) => {
+    const delta = (clientX - drag.startX) / drag.width * extent
+    const minimum = .1
+    if (drag.mode === 'start') {
+      const startTime = Math.max(0, Math.min(drag.endTime - minimum, drag.startTime + delta))
+      return { id: drag.id, startTime, endTime: drag.endTime }
+    }
+    if (drag.mode === 'end') {
+      const endTime = Math.max(drag.startTime + minimum, Math.min(extent, drag.endTime + delta))
+      return { id: drag.id, startTime: drag.startTime, endTime }
+    }
     const span = Math.max(0, drag.endTime - drag.startTime)
-    const startTime = Math.max(0, Math.min(Math.max(0, extent - span), drag.startTime + (clientX - drag.startX) / drag.width * extent))
+    const startTime = Math.max(0, Math.min(Math.max(0, extent - span), drag.startTime + delta))
     return { id: drag.id, startTime, endTime: startTime + span }
   }
 
@@ -179,7 +192,7 @@ export default function TimelinePanel({ audioUrl, audioName, duration, flags, se
     if (!drag || drag.pointerId !== event.pointerId) return
     if (drag.moved) {
       const position = blockPosition(drag, event.clientX)
-      if (position.startTime !== drag.startTime) onMoveSegment(drag.id, position.startTime, position.endTime)
+      if (position.startTime !== drag.startTime || position.endTime !== drag.endTime) onMoveSegment(drag.id, position.startTime, position.endTime)
     }
     blockDrag.current = null
     setDraggedSegment(null)
@@ -197,7 +210,7 @@ export default function TimelinePanel({ audioUrl, audioName, duration, flags, se
             <div className="wave-stage" style={{ backgroundSize: `${100 / tickCount}% 100%` }} onPointerDown={startSeek} onPointerMove={moveSeek} onPointerUp={endSeek} onPointerCancel={event => { if (draggingPointer.current === event.pointerId) draggingPointer.current = null }} onLostPointerCapture={() => { draggingPointer.current = null }} role="slider" aria-label="音频时间轴，点击或拖动定位" aria-valuemin={0} aria-valuemax={Math.round(extent)} aria-valuenow={Math.round(time)} tabIndex={audioName ? 0 : -1} onKeyDown={event => { if (event.key === 'ArrowLeft') { event.preventDefault(); onSeek(Math.max(0, time - 1)) } else if (event.key === 'ArrowRight') { event.preventDefault(); onSeek(Math.min(extent, time + 1)) } }}>
               {waveform && <svg className="waveform-svg" viewBox={`0 0 ${waveform.levels.length} 100`} preserveAspectRatio="none" aria-hidden="true"><path d={peakPath} className="waveform-peaks"/><path d={levelPath} className="waveform-levels"/></svg>}
               {!waveform && <div className="waveform-placeholder">{loading ? stage : error || '导入 MP3 后显示人声波形'}</div>}
-              {segments.map((segment, index) => { const shown = draggedSegment?.id === segment.id ? draggedSegment : segment; return <button key={segment.id} className={`timeline-block ${selected === segment.id ? 'current' : ''}`} style={{ left: `${Math.max(0, Math.min(100, shown.startTime / extent * 100))}%`, width: `${Math.max(0, Math.min(100, shown.endTime / extent * 100) - Math.max(0, shown.startTime / extent * 100))}%` }} title={`乐句 ${index + 1} · ${clock(shown.startTime)}–${clock(shown.endTime)}`} onPointerDown={event => startBlockDrag(event, segment)} onPointerMove={moveBlock} onPointerUp={endBlockDrag} onPointerCancel={() => { blockDrag.current = null; setDraggedSegment(null) }} onLostPointerCapture={() => { blockDrag.current = null; setDraggedSegment(null) }} onClick={event => { event.stopPropagation(); onSelect(segment.id) }}>乐句 {String(index + 1).padStart(2, '0')}</button> })}
+              {segments.map((segment, index) => { const shown = draggedSegment?.id === segment.id ? draggedSegment : segment; return <button key={segment.id} className={`timeline-block ${selected === segment.id ? 'current' : ''}`} style={{ left: `${Math.max(0, Math.min(100, shown.startTime / extent * 100))}%`, width: `${Math.max(0, Math.min(100, shown.endTime / extent * 100)) - Math.max(0, Math.min(100, shown.startTime / extent * 100))}%` }} title={`乐句 ${index + 1} · ${formatTime(shown.startTime)}–${formatTime(shown.endTime)}`} onPointerDown={event => startBlockDrag(event, segment)} onPointerMove={moveBlock} onPointerUp={endBlockDrag} onPointerCancel={() => { blockDrag.current = null; setDraggedSegment(null) }} onLostPointerCapture={() => { blockDrag.current = null; setDraggedSegment(null) }} onClick={event => { event.stopPropagation(); onSelect(segment.id) }}><span className="timeline-resize-grip start" aria-hidden="true"/><span className="timeline-block-text">乐句 {String(index + 1).padStart(2, '0')}</span><span className="timeline-resize-grip end" aria-hidden="true"/></button> })}
               <div className="timeline-cursor" style={{ left: `${Math.max(0, Math.min(100, time / extent * 100))}%` }}/>
             </div>
           </div>
