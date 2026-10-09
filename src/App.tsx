@@ -216,7 +216,7 @@ function App() {
     if (index === 0) {
       const first = ordered[0]
       nextFlags.push({ id: `flag-${Date.now()}`, time: at, segmentId: first.id, kind: 'start' })
-      setProject(p => ({ ...p, flags: nextFlags, segments: p.segments.map((s, i) => i === 0 ? { ...s, startTime: at, endTime: Math.max(s.endTime, at + .25) } : s) }))
+      setProject(p => ({ ...p, flags: nextFlags, segments: p.segments.map((s, i) => i === 0 ? { ...s, startTime: at, endTime: Math.max(s.endTime, at + 1) } : s) }))
       setSelected(first.id)
       const pageIndex = project.pages.findIndex(page => page.id === first.pageId); if (pageIndex >= 0) setActivePage(pageIndex)
       flash(`已打点 ${formatTime(at)} · 第 1 句开始`)
@@ -232,7 +232,7 @@ function App() {
       flags: nextFlags,
       segments: p.segments.map((s, i) => i === index - 1
         ? { ...s, endTime: at }
-        : i === index ? { ...s, startTime: at, endTime: Math.max(s.endTime, at + .25) } : s),
+        : i === index ? { ...s, startTime: at, endTime: Math.max(s.endTime, at + 1) } : s),
     }))
     if (next) {
       setSelected(next.id)
