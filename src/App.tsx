@@ -6,12 +6,12 @@ import AutoAlignDialog from './components/AutoAlignDialog'
 import TimelinePanel from './components/TimelinePanel'
 import AutoBoxDialog from './components/AutoBoxDialog'
 import { initialProject } from './types'
-import { calculateCameraTarget, calculateKaraokeProgress, fitRegion, formatTime, migrateLegacyCuts, regionReveal, segmentRegions } from './utils'
+import { calculateCameraTarget, calculateKaraokeProgress, fitRegion, formatTime, migrateLegacyCuts, recoverFlagsFromTiming, regionReveal, segmentRegions } from './utils'
 
 const API = ''
 function App() {
   const [project, setProjectState] = useState<Project>(() => {
-    try { return migrateLegacyCuts({ ...initialProject, ...JSON.parse(localStorage.getItem('pujian-project') || '{}') }) } catch { return initialProject }
+    try { return recoverFlagsFromTiming(migrateLegacyCuts({ ...initialProject, ...JSON.parse(localStorage.getItem('pujian-project') || '{}') })) } catch { return initialProject }
   })
   const [activePage, setActivePage] = useState(0)
   const [selected, setSelected] = useState<string | null>(null)
@@ -89,6 +89,10 @@ function App() {
 
   useEffect(() => { localStorage.setItem('pujian-project', JSON.stringify(project)) }, [project])
   useEffect(() => {
+    const repaired = recoverFlagsFromTiming(project)
+    if (repaired !== project) setProject(repaired)
+  }, [project])
+  useEffect(() => {
     if (!project.projectId) return
     const timer = window.setTimeout(() => {
       fetch(`${API}/api/projects/${project.projectId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(project) }).catch(() => {})
@@ -102,6 +106,8 @@ function App() {
   const currentPage: ScorePage | undefined = project.pages[activePage]
   const activeSegment = useMemo(() => project.segments.find(s => s.startTime <= time && s.endTime >= time), [project.segments, time])
   const progress = activeSegment ? calculateKaraokeProgress(activeSegment.startTime, activeSegment.endTime, [], time) : 0
+  const visibleFlags = recoverFlagsFromTiming(project).flags || []
+  const nextFlagLabel = visibleFlags.some(flag => flag.kind === 'end') ? '完成' : visibleFlags.length >= project.segments.length ? '收尾' : String(visibleFlags.length + 1).padStart(2, '0')
   const activeRegions = activeSegment ? segmentRegions(activeSegment) : []
   const activeReveal = regionReveal(activeRegions, progress)
   const unfinishedPart = activeReveal.findIndex(value => value < 1)
@@ -177,10 +183,14 @@ function App() {
     return { ...segment, pageId: regions[0].pageId, region: regions[0].region, regions: regions.length > 1 ? regions : undefined }
   }) }))
   const deleteSegment = (id: string) => {
-    const hadFlags = Boolean(project.flags?.length)
-    setProject(p => ({ ...p, segments: p.segments.filter(s => s.id !== id), flags: hadFlags ? [] : p.flags }))
+    setProject(p => {
+      const segments = p.segments.filter(s => s.id !== id)
+      const flags = p.flags?.filter(flag => flag.segmentId !== id)
+        .map((flag, index) => index === 0 ? { ...flag, kind: 'start' as const } : flag)
+      return { ...p, segments, flags }
+    })
     selectOne(null); setTool('select')
-    flash(hadFlags ? '标注已删除，旧打点已清空；可按 Ctrl+Z 撤销' : '标注已删除；可按 Ctrl+Z 撤销')
+    flash('标注已删除；其余乐句的打点已保留，可按 Ctrl+Z 撤销')
   }
   const onPdf = async (file?: File) => {
     if (!file) return
@@ -220,7 +230,7 @@ function App() {
   const addFlag = () => {
     const at = audioRef.current?.currentTime ?? time
     const ordered = project.segments
-    const flags = project.flags || []
+    const flags = visibleFlags
     if (!audioRef.current || !project.source.audio) { flash('请先导入音频'); return }
     if (!ordered.length) { flash('先为乐句放好标注区域'); return }
     if (flags.length > ordered.length) { flash('所有乐句都已打点完成'); return }
@@ -241,12 +251,13 @@ function App() {
     const previous = ordered[index - 1]
     if (!previous || at <= previous.startTime) { flash('这个标记早于当前乐句的开始位置'); return }
     const next = ordered[index]
+    const keepPreviousEnd = flags[index - 1]?.id.startsWith('recovered-')
     nextFlags.push({ id: `flag-${Date.now()}`, time: at, segmentId: next?.id || previous.id, kind: next ? 'transition' : 'end' })
     setProject(p => ({
       ...p,
       flags: nextFlags,
       segments: p.segments.map((s, i) => i === index - 1
-        ? { ...s, endTime: at }
+        ? keepPreviousEnd ? s : { ...s, endTime: at }
         : i === index ? { ...s, startTime: at, endTime: Math.max(s.endTime, at + 1) } : s),
     }))
     if (next) {
@@ -339,10 +350,20 @@ function App() {
       const right: Segment = { ...source, id: rightId, region: { ...source.region, x: boundary, width: source.region.x + source.region.width - boundary }, startTime: provisionalTime, text: undefined }
       const segments = [...previous.segments]
       segments.splice(index, 1, left, right)
-      return { ...previous, segments, flags: previous.flags?.length ? [] : previous.flags }
+      const flags = [...(previous.flags || [])]
+      const markerIndex = flags.findIndex(flag => flag.segmentId === source.id && flag.kind !== 'end')
+      if (markerIndex >= 0) {
+        const transition: KaraokeFlag = { id: `flag-${rightId}`, time: provisionalTime, segmentId: rightId, kind: 'transition' }
+        const endingIndex = flags.findIndex(flag => flag.segmentId === source.id && flag.kind === 'end')
+        if (endingIndex >= 0) {
+          flags[endingIndex] = { ...flags[endingIndex], segmentId: rightId }
+          flags.splice(endingIndex, 0, transition)
+        } else flags.splice(markerIndex + 1, 0, transition)
+      }
+      return { ...previous, segments, flags }
     })
     selectOne(rightId)
-    flash(project.flags?.length ? '已分成两个独立标注；旧打点已清空，请重新校准时间' : '已分成两个独立标注，可继续竖切或单独调整时间')
+    flash('已分成两个独立标注；原有打点已保留')
   }
   const persistProject = async (snapshot: Project) => {
     localStorage.setItem('pujian-project', JSON.stringify(snapshot))
@@ -573,8 +594,8 @@ function App() {
       </main>
       <aside className="right-panel"><div className="right-panel-title"><div><span className="eyebrow">检查器</span><h2>标注属性</h2></div><button className="icon-button"><MoreHorizontal size={17}/></button></div>{selected && project.segments.some(s => s.id === selected) ? (() => { const seg = project.segments.find(s => s.id === selected)!; const index = project.segments.indexOf(seg); const neighbors = [index > 0 ? project.segments[index - 1] : null, project.segments[index + 1] || null].filter((item): item is Segment => Boolean(item)); const targetId = neighbors.some(item => item.id === mergeTarget) ? mergeTarget! : neighbors[0]?.id || ""; return <><div className="inspector-card"><div className="inspector-segment-title"><div className="segment-color-dot"/><div><strong>乐句 {String(project.segments.indexOf(seg) + 1).padStart(2, '0')}</strong><span>页面 {project.pages.findIndex(p => p.id === seg.pageId) + 1} · 左至右</span></div><button className="icon-button tiny" onClick={() => deleteSegment(seg.id)}><X size={15}/></button></div><label className="field-label">开始时间</label><div className="time-input"><Clock3 size={14}/><input value={formatTime(seg.startTime)} onChange={e => { const v = e.target.value.split(':').reduce((a, b) => a * 60 + Number(b), 0); if (Number.isFinite(v)) updateSegment(seg.id, { startTime: v }) }}/><button onClick={() => updateSegment(seg.id, { startTime: time })}>设为当前</button></div><label className="field-label">结束时间</label><div className="time-input"><Clock3 size={14}/><input value={formatTime(seg.endTime)} onChange={e => { const v = e.target.value.split(':').reduce((a, b) => a * 60 + Number(b), 0); if (Number.isFinite(v)) updateSegment(seg.id, { endTime: v }) }}/><button onClick={() => updateSegment(seg.id, { endTime: time })}>设为当前</button></div><div className="field-divider"/><div className="highlight-setting"><div><strong>高亮样式</strong><span>橘红色文字 · 无底色</span></div><div className="yellow-swatch"/></div><div className="inspector-merge"><label className="field-label" htmlFor="merge-target">与哪句合并</label><select id="merge-target" value={targetId} disabled={!neighbors.length} onChange={e => setMergeTarget(e.target.value)}>{neighbors.map(item => { const itemIndex = project.segments.indexOf(item); return <option key={item.id} value={item.id}>乐句 {String(itemIndex + 1).padStart(2, "0")}（{itemIndex < index ? "上一句" : "下一句"}）</option> })}</select><button className="button button-secondary" disabled={!targetId} onClick={() => mergeSegments([seg.id, targetId])}>合并这两句</button></div><div className="inspector-actions"><button className="button button-danger-quiet" onClick={() => deleteSegment(seg.id)}>删除标注</button></div></div></> })() : <div className="inspector-empty"><div className="inspector-empty-icon"><WandSparkles size={19}/></div><strong>选择一条标注</strong><p>选中乐谱上的标注区域，<br/>即可调整时间与位置。</p><div className="inspector-hint"><Sparkles size={14}/><span>拖动框内可移动，拖动边线或四角可调整大小</span></div></div>}
       </aside>
-      <div className="transport-panel"><div className="transport-left"><button className="play-button" onClick={togglePlay}>{playing ? <Pause size={17} fill="currentColor"/> : <Play size={17} fill="currentColor"/>}</button><button className="flag-button" onClick={addFlag} disabled={!project.segments.length || !project.source.audio} title="记录此刻的音频时间（Enter）"><Flag size={14}/><span>打点</span>{Boolean(project.flags?.length) && <em>{project.flags?.length}</em>}</button><div className="transport-time"><strong>{formatTime(time)}</strong><span>/ {formatTime(duration)}</span></div><div className="transport-divider"/><div className="speed-control"><span>速度</span><select defaultValue="1" onChange={e => { if (audioRef.current) audioRef.current.playbackRate = Number(e.target.value) }}><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1">1.0×</option><option value="1.25">1.25×</option></select><ChevronDown size={12}/></div></div><div className="transport-right"><span className="now-playing-dot"/><span>{activeSegment ? `正在预览 · 乐句 ${String(project.segments.indexOf(activeSegment) + 1).padStart(2, '0')}` : project.source.audio ? '音频已就绪' : '等待导入音频'}</span><button className="icon-button tiny"><Settings2 size={16}/></button></div></div>
-      <TimelinePanel audioUrl={project.source.audioUrl} audioName={project.source.audio} duration={duration || project.audioDuration || 0} flags={project.flags || []} segments={project.segments} selected={selected} time={time} playing={playing} onSelect={id => { selectOne(id); const pageIndex = project.pages.findIndex(page => page.id === project.segments.find(segment => segment.id === id)?.pageId); if (pageIndex >= 0) setActivePage(pageIndex) }} onSeek={seek} onMoveSegment={(id, startTime, endTime) => updateSegment(id, { startTime, endTime })}/>
+      <div className="transport-panel"><div className="transport-left"><button className="play-button" onClick={togglePlay}>{playing ? <Pause size={17} fill="currentColor"/> : <Play size={17} fill="currentColor"/>}</button><button className="flag-button" onClick={addFlag} disabled={!project.segments.length || !project.source.audio} title={`下一次打点：${nextFlagLabel === "收尾" ? "最后一句结束" : nextFlagLabel === "完成" ? "已完成" : `乐句 ${nextFlagLabel}`}`}><Flag size={14}/><span>打点</span><em>{nextFlagLabel}</em></button><div className="transport-time"><strong>{formatTime(time)}</strong><span>/ {formatTime(duration)}</span></div><div className="transport-divider"/><div className="speed-control"><span>速度</span><select defaultValue="1" onChange={e => { if (audioRef.current) audioRef.current.playbackRate = Number(e.target.value) }}><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1">1.0×</option><option value="1.25">1.25×</option></select><ChevronDown size={12}/></div></div><div className="transport-right"><span className="now-playing-dot"/><span>{activeSegment ? `正在预览 · 乐句 ${String(project.segments.indexOf(activeSegment) + 1).padStart(2, '0')}` : project.source.audio ? '音频已就绪' : '等待导入音频'}</span><button className="icon-button tiny"><Settings2 size={16}/></button></div></div>
+      <TimelinePanel audioUrl={project.source.audioUrl} audioName={project.source.audio} duration={duration || project.audioDuration || 0} flags={visibleFlags} segments={project.segments} selected={selected} time={time} playing={playing} onSelect={id => { selectOne(id); const pageIndex = project.pages.findIndex(page => page.id === project.segments.find(segment => segment.id === id)?.pageId); if (pageIndex >= 0) setActivePage(pageIndex) }} onSeek={seek} onMoveSegment={(id, startTime, endTime) => updateSegment(id, { startTime, endTime })}/>
     </div>
     {resetOpen && <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget) setResetOpen(false) }}><div className="reset-dialog" role="dialog" aria-modal="true" aria-labelledby="reset-title" aria-describedby="reset-description"><div className="reset-dialog-icon"><RotateCcw size={20}/></div><h2 id="reset-title">重新标注这首歌？</h2><p id="reset-description">将清空 {project.segments.length} 条乐句标注和 {(project.flags || []).length} 个打点。乐谱与音频会保留。</p><div className="reset-dialog-actions"><button className="button button-secondary" autoFocus onClick={() => setResetOpen(false)}>取消</button><button className="button reset-confirm-button" onClick={resetAnnotations}>清空标注</button></div><small>清空后可立即按 Ctrl+Z 恢复。</small></div></div>}
     {autoCandidates && <AutoAlignDialog candidates={autoCandidates} existingCount={project.segments.length} playing={playing} onClose={() => setAutoCandidates(null)} onListen={at => { seek(at); const audio = audioRef.current; if (audio) { void audio.play(); setPlaying(true) } }} onPause={() => { audioRef.current?.pause(); setPlaying(false) }} onApply={applyAutoCandidates}/>}
