@@ -65,3 +65,7 @@ npm run dev
 .\.venv\Scripts\python.exe -m unittest discover -s backend/tests -v
 npm run build
 ```
+
+## 许可证
+
+本仓库代码采用 [MIT 许可证](LICENSE)。请只导入你有权使用的歌谱和音频；用户自行导入的文件不随仓库发布。

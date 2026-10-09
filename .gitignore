@@ -11,6 +11,7 @@ backend/exports/
 *.log
 *.tsbuildinfo
 reference/*.json
+reference/自动标注调研.md
 reference/JumpingBarSetup.rar
 reference/JumpingBar-参考记录.md
 reference/help-extracted.txt
