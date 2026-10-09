@@ -234,6 +234,7 @@ body{min-width:0;height:100dvh;overflow:hidden}
 .time-input{height:29px}
 .field-divider{margin:9px 0}
 .inspector-actions{margin-top:8px}
+.inspector-actions .repeat-region-button{width:100%;height:29px;justify-content:center;font-size:10px}
 .inspector-merge{display:flex;flex-direction:column;gap:7px;margin-top:11px;padding-top:9px;border-top:1px solid #eff0eb}
 .inspector-merge .field-label{margin:0}
 .inspector-merge select{width:100%;height:31px;padding:0 8px;border:1px solid #e8e9e3;border-radius:5px;background:#fff;color:#4e5149;font-size:10px}

@@ -4,6 +4,15 @@ export function segmentRegions(segment: Segment): SegmentRegion[] {
   return segment.regions?.length ? segment.regions : [{ pageId: segment.pageId, region: segment.region }]
 }
 
+export function regionPositionKey(part: SegmentRegion): string {
+  const { x, y, width, height } = part.region
+  return JSON.stringify([part.pageId, x, y, width, height])
+}
+
+export function sharedRegionKey(segment: Segment): string {
+  return segmentRegions(segment).map(regionPositionKey).sort().join('|')
+}
+
 export function regionReveal(regions: SegmentRegion[], progress: number): number[] {
   const widths = regions.map(item => Math.max(.001, item.region.width))
   const total = widths.reduce((sum, width) => sum + width, 0)
