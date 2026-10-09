@@ -37,21 +37,26 @@ function Wait-Ready([scriptblock]$check, [string]$label, [string]$logFile) {
 }
 
 function Get-PythonCommand {
+    $candidates = @()
     $py = Get-Command py.exe -ErrorAction SilentlyContinue
     if ($py) {
-        $version = & $py.Source -3.11 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>$null
-        if ($LASTEXITCODE -eq 0 -and $version -eq '3.11') {
-            return @{ File = $py.Source; Args = @('-3.11') }
+        $candidates += @{ File = $py.Source; Args = @('-3') }
+    }
+    foreach ($name in @('python.exe', 'python3.exe')) {
+        $python = Get-Command $name -ErrorAction SilentlyContinue
+        if ($python) { $candidates += @{ File = $python.Source; Args = @() } }
+    }
+    foreach ($candidate in $candidates) {
+        try {
+            $major = & $candidate.File @($candidate.Args) -c 'import sys; print(sys.version_info.major)' 2>$null
+            if ($LASTEXITCODE -eq 0 -and $major -eq '3') {
+                return $candidate
+            }
+        } catch {
+            continue
         }
     }
-    $python = Get-Command python.exe -ErrorAction SilentlyContinue
-    if ($python) {
-        $version = & $python.Source -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>$null
-        if ($LASTEXITCODE -eq 0 -and $version -eq '3.11') {
-            return @{ File = $python.Source; Args = @() }
-        }
-    }
-    throw '需要先安装 Python 3.11，并勾选安装程序中的“Add python.exe to PATH”。'
+    throw '未找到可运行的 Python 3。请安装 Python 3，或让 py、python、python3 命令可用。'
 }
 
 $job = $null

@@ -13,7 +13,7 @@
 
 ## 在 Windows 上运行
 
-先安装 Python 3.11 和 Node.js 20。自动框选、自动对齐还需要安装 Tesseract OCR 及 `chi_sim` 中文语言包；让 `tesseract` 位于 PATH，或安装在 `C:\Program Files\Tesseract-OCR\`。
+先安装 Python 3 和 Node.js 20。启动脚本会依次尝试 `py -3`、`python` 和 `python3`，不限定 Python 3.11；如果所选版本不被某个依赖支持，安装阶段会显示该依赖的错误。自动框选、自动对齐还需要安装 Tesseract OCR 及 `chi_sim` 中文语言包；让 `tesseract` 位于 PATH，或安装在 `C:\Program Files\Tesseract-OCR\`。
 
 从 GitHub 克隆或拉取仓库后，双击根目录的 [启动谱间.cmd](启动谱间.cmd)。首次运行会在仓库目录中创建 `.venv`、安装 Python 与前端依赖，并尝试安装人声波形组件，因此需要联网，可能花几分钟；以后双击会直接启动本地服务并打开浏览器。若人声组件安装失败，仍可进入基础界面，稍后按下方命令手动重装。启动文件和 `scripts/` 一起随仓库提交，不要只复制 `.cmd` 文件。
 
