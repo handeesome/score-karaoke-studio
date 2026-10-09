@@ -34,7 +34,7 @@ export default function ExportDialog(props: {
     const item = presets.find(candidate => candidate.id === preset)!
     onSettings({ ...settings, preset, width: item.width, height: item.height })
   }
-  return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
+  return <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget) onClose() }}>
     <section className="export-dialog" role="dialog" aria-modal="true" aria-labelledby="export-title">
       <header className="export-dialog-header"><div className="export-title-icon"><FileVideo2 size={18}/></div><div><h2 id="export-title">导出歌谱视频</h2><p>预览当前乐句在所选画幅中的效果</p></div><button className="icon-button" onClick={onClose} aria-label="关闭"><X size={18}/></button></header>
       <div className="export-dialog-body">
