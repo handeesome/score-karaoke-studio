@@ -409,21 +409,18 @@ function App() {
   const duplicateBelow = () => {
     const sources = project.segments.filter(segment => selectedIds.includes(segment.id))
     if (!sources.length) { flash('先选中要复制的标注'); return }
-    const parts = sources.flatMap(segmentRegions)
-    const offsets = new Map<string, number>()
-    for (const pageId of new Set(parts.map(part => part.pageId))) {
-      const onPage = parts.filter(part => part.pageId === pageId)
-      const top = Math.min(...onPage.map(part => part.region.y))
-      const bottom = Math.max(...onPage.map(part => part.region.y + part.region.height))
-      const offset = bottom - top + .025
-      if (bottom + offset > 1) { flash('选中区域下方空间不足，无法复制到下一行'); return }
-      offsets.set(pageId, offset)
+    const copyRegions = sources.map(source => segmentRegions(source).map(part => ({
+      pageId: part.pageId,
+      region: { ...part.region, y: part.region.y + part.region.height + Math.min(.006, part.region.height / 4) },
+    })))
+    const noSpace = copyRegions.findIndex(regions => regions.some(part => part.region.y + part.region.height > 1))
+    if (noSpace >= 0) {
+      const number = project.segments.indexOf(sources[noSpace]) + 1
+      flash(`乐句 ${String(number).padStart(2, '0')} 下方放不下副本；可改用「重复使用选中框」`)
+      return
     }
     const copies = sources.map((source, index): Segment => {
-      const regions = segmentRegions(source).map(part => ({
-        pageId: part.pageId,
-        region: fitRegion({ ...part.region, y: part.region.y + offsets.get(part.pageId)! }),
-      }))
+      const regions = copyRegions[index].map(part => ({ pageId: part.pageId, region: fitRegion(part.region) }))
       const single = sources.length === 1
       return { ...source, id: `segment-${Date.now()}-${index}`, pageId: regions[0].pageId,
         region: regions[0].region, regions: regions.length > 1 ? regions : undefined,
