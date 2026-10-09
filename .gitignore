@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .venv/
+.launcher/
 reference/models/
 reference/vocals/
 __pycache__/
