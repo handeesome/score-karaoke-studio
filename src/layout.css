@@ -171,7 +171,7 @@ body{min-width:0;height:100dvh;overflow:hidden}
 
 /* The waveform, phrase blocks and playhead share the same audio-time origin. */
 .timeline-ruler{padding-right:8px}
-.wave-stage{position:absolute;left:104px;right:8px;top:0;bottom:0;cursor:ew-resize;touch-action:none;user-select:none;background-image:repeating-linear-gradient(to right,transparent 0,transparent calc(20% - 1px),#e8ece5 calc(20% - 1px),#e8ece5 20%)}
+.wave-stage{position:absolute;left:104px;right:8px;top:0;bottom:0;cursor:pointer;touch-action:none;user-select:none;background-image:repeating-linear-gradient(to right,transparent 0,transparent calc(20% - 1px),#e8ece5 calc(20% - 1px),#e8ece5 20%)}
 .wave-stage:focus-visible{outline:2px solid #7a9a7e;outline-offset:-2px}
 .waveform-svg{position:absolute;left:0;right:0;top:19px;width:100%;height:calc(100% - 23px);overflow:visible;pointer-events:none}
 .waveform-peaks{fill:#c4d5c5;opacity:.8}
@@ -225,7 +225,7 @@ body{min-width:0;height:100dvh;overflow:hidden}
 .timeline-track>.wave-label{position:relative;inset:auto;align-self:stretch;flex:none;width:96px;margin-top:30px;border:1px solid #e9ebe5;border-radius:6px 0 0 6px}
 .timeline-scroll{flex:1;min-width:0;min-height:0;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin;scrollbar-color:#bacbbb #f1f3ef}
 .timeline-content{display:flex;flex-direction:column;height:100%;min-width:100%}
-.timeline-progress{position:relative;flex:none;height:12px;cursor:ew-resize;touch-action:none;user-select:none}
+.timeline-progress{position:relative;flex:none;height:12px;cursor:pointer;touch-action:none;user-select:none}
 .timeline-progress::before{content:'';position:absolute;inset:4px 0;border-radius:4px;background:#f0f1ed;pointer-events:none}
 .timeline-progress-fill{position:absolute;top:4px;height:4px;border-radius:4px;background:#6c8c72;pointer-events:none}
 .timeline-progress .flag-tick{top:3px}
