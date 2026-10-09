@@ -33,15 +33,23 @@ export function recoverFlagsFromTiming(project: Project): Project {
   return { ...project, flags }
 }
 
-export function sortSegmentsByTiming(project: Project): Project {
+export function bindTimingToScoreOrder(project: Project): Project {
   const timedIds = new Set((project.flags || []).filter(flag => flag.kind !== 'end').map(flag => flag.segmentId))
-  const segments = [...project.segments].sort((a, b) => {
-    const aTimed = a.timingSet === true || timedIds.has(a.id)
-    const bTimed = b.timingSet === true || timedIds.has(b.id)
-    if (aTimed !== bTimed) return aTimed ? -1 : 1
-    return aTimed ? a.startTime - b.startTime : 0
+  const timed = project.segments.filter(segment => segment.timingSet || timedIds.has(segment.id))
+    .sort((a, b) => a.startTime - b.startTime)
+  const untimed = project.segments.filter(segment => !segment.timingSet && !timedIds.has(segment.id))
+  const slots = [...timed, ...untimed]
+  const slotById = new Map(slots.map((segment, index) => [segment.id, index]))
+  const segments = project.segments.map((segment, index) => ({ ...segment,
+    startTime: slots[index].startTime,
+    endTime: slots[index].endTime,
+    timingSet: Boolean(slots[index].timingSet || timedIds.has(slots[index].id)),
+  }))
+  const flags = project.flags?.map(flag => {
+    const slot = slotById.get(flag.segmentId)
+    return slot === undefined ? flag : { ...flag, segmentId: segments[slot].id }
   })
-  return segments.every((segment, index) => segment === project.segments[index]) ? project : { ...project, segments }
+  return { ...project, segments, flags, scoreTimingBound: true }
 }
 
 export function formatTime(seconds: number) {

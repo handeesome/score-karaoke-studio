@@ -112,9 +112,10 @@ def _segment_for_time(segments: list[dict], at: float):
     ordered = sorted(segments, key=lambda item: (float(item.get("startTime", 0)), item["id"]))
     if not ordered:
         return None, None
-    for index, segment in enumerate(ordered):
-        if float(segment["startTime"]) <= at < float(segment["endTime"]):
-            return segment, index
+    active = [(index, segment) for index, segment in enumerate(ordered) if float(segment["startTime"]) <= at < float(segment["endTime"])]
+    if active:
+        index, segment = active[-1]
+        return segment, index
     prior = [(index, seg) for index, seg in enumerate(ordered) if float(seg["endTime"]) <= at]
     if prior:
         index, segment = prior[-1]
@@ -157,7 +158,8 @@ def render_frame(project: dict, at: float, width: int, height: int, zoom: float 
     media_dir = media_dir or Path(__file__).resolve().parents[1] / "media"
     safe_zone = safe_zone if safe_zone is not None else (0.50 if height > width else 0.58)
     pages = {page["id"]: _page_layout(page, media_dir, width, height, zoom) for page in project.get("pages", [])}
-    segments = sorted(project.get("segments", []), key=lambda item: (float(item.get("startTime", 0)), item["id"]))
+    timed_ids = {flag.get("segmentId") for flag in project.get("flags", []) if flag.get("kind") != "end"}
+    segments = sorted((segment for segment in project.get("segments", []) if segment.get("timingSet") or segment["id"] in timed_ids), key=lambda item: (float(item.get("startTime", 0)), item["id"]))
     events = _scroll_events(segments, pages, height, safe_zone)
     segment, index = _segment_for_time(segments, at)
     frame = _draw_one(project, at, width, height, zoom, safe_zone, pages, events, segment)

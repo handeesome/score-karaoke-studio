@@ -6,12 +6,15 @@ import AutoAlignDialog from './components/AutoAlignDialog'
 import TimelinePanel from './components/TimelinePanel'
 import AutoBoxDialog from './components/AutoBoxDialog'
 import { initialProject } from './types'
-import { calculateCameraTarget, calculateKaraokeProgress, fitRegion, formatTime, migrateLegacyCuts, recoverFlagsFromTiming, regionReveal, segmentRegions, sortSegmentsByTiming } from './utils'
+import { bindTimingToScoreOrder, calculateCameraTarget, calculateKaraokeProgress, fitRegion, formatTime, migrateLegacyCuts, recoverFlagsFromTiming, regionReveal, segmentRegions } from './utils'
 
 const API = ''
 function App() {
   const [project, setProjectState] = useState<Project>(() => {
-    try { return sortSegmentsByTiming(recoverFlagsFromTiming(migrateLegacyCuts({ ...initialProject, ...JSON.parse(localStorage.getItem('pujian-project') || '{}') }))) } catch { return initialProject }
+    try {
+      const loaded = recoverFlagsFromTiming(migrateLegacyCuts({ ...initialProject, ...JSON.parse(localStorage.getItem('pujian-project') || '{}') }))
+      return loaded.scoreTimingBound ? loaded : bindTimingToScoreOrder(loaded)
+    } catch { return initialProject }
   })
   const [activePage, setActivePage] = useState(0)
   const [selected, setSelected] = useState<string | null>(null)
@@ -97,7 +100,7 @@ function App() {
   useEffect(() => { numberInputRef.current?.focus() }, [editingNumber?.id, editingNumber?.part])
   useEffect(() => {
     const repaired = recoverFlagsFromTiming(project)
-    if (repaired !== project) setProject(sortSegmentsByTiming(repaired))
+    if (repaired !== project) setProject(repaired)
   }, [project])
   useEffect(() => {
     if (!project.projectId) return
@@ -111,9 +114,12 @@ function App() {
   useEffect(() => { if (project.export) setExportSettings(project.export) }, [project.export])
   useEffect(() => { if (!audioUrl && project.source.audioUrl && audioRef.current) audioRef.current.src = project.source.audioUrl }, [project.source.audioUrl, audioUrl])
   const currentPage: ScorePage | undefined = project.pages[activePage]
-  const activeSegment = useMemo(() => project.segments.find(s => s.startTime <= time && s.endTime >= time), [project.segments, time])
-  const progress = activeSegment ? calculateKaraokeProgress(activeSegment.startTime, activeSegment.endTime, [], time) : 0
   const visibleFlags = recoverFlagsFromTiming(project).flags || []
+  const timedIds = new Set(visibleFlags.filter(flag => flag.kind !== 'end').map(flag => flag.segmentId))
+  const activeSegment = useMemo(() => project.segments
+    .filter(segment => (segment.timingSet || timedIds.has(segment.id)) && segment.startTime <= time && time < segment.endTime)
+    .sort((a, b) => b.startTime - a.startTime)[0], [project.segments, visibleFlags, time])
+  const progress = activeSegment ? calculateKaraokeProgress(activeSegment.startTime, activeSegment.endTime, [], time) : 0
   const markedSegments = new Set(visibleFlags.filter(flag => flag.kind !== 'end').map(flag => flag.segmentId))
   const nextUnmarkedIndex = project.segments.findIndex(segment => !markedSegments.has(segment.id))
   const nextFlagLabel = nextUnmarkedIndex < 0 ? visibleFlags.some(flag => flag.kind === 'end') ? '完成' : '收尾' : String(nextUnmarkedIndex + 1).padStart(2, '0')
@@ -201,18 +207,18 @@ function App() {
     if (from < 0 || from === to) { setOrderDraft(null); return }
     lastHistoryAt.current = 0
     setProject(previous => {
-      const segments = [...previous.segments]
-      const [moved] = segments.splice(from, 1)
-      segments.splice(to, 0, moved)
-      return { ...previous, segments }
+      const reordered = [...previous.segments]
+      const [moved] = reordered.splice(from, 1)
+      reordered.splice(to, 0, moved)
+      return bindTimingToScoreOrder({ ...previous, segments: reordered })
     })
     setOrderDraft(null)
-    flash(`已移到乐句 ${String(position).padStart(2, '0')}；请检查这句的音频时间`)
+    flash(`已移到乐句 ${String(position).padStart(2, '0')}；原有时间和打点按序号保留`)
   }
   const updateSegment = (id: string, patch: Partial<Segment>) => setProject(p => {
     const changedTime = patch.startTime !== undefined || patch.endTime !== undefined
     const next = { ...p, segments: p.segments.map(s => s.id === id ? { ...s, ...patch, ...(changedTime ? { timingSet: true } : {}) } : s) }
-    return changedTime ? sortSegmentsByTiming(next) : next
+    return next
   })
   const updateSegmentRegion = (id: string, part: number, region: Region) => setProject(p => ({ ...p, segments: p.segments.map(segment => {
     if (segment.id !== id) return segment
@@ -280,7 +286,7 @@ function App() {
       const first = ordered[0]
       nextFlags.forEach(flag => { if (flag.kind === 'start') flag.kind = 'transition' })
       nextFlags.unshift({ id: `flag-${Date.now()}`, time: at, segmentId: first.id, kind: 'start' })
-      setProject(p => sortSegmentsByTiming({ ...p, flags: nextFlags, segments: p.segments.map((s, i) => i === 0 ? { ...s, startTime: at, endTime: Math.max(s.endTime, at + 1), timingSet: true } : s) }))
+      setProject(p => ({ ...p, flags: nextFlags, segments: p.segments.map((s, i) => i === 0 ? { ...s, startTime: at, endTime: Math.max(s.endTime, at + 1), timingSet: true } : s) }))
       selectOne(first.id)
       const pageIndex = project.pages.findIndex(page => page.id === first.pageId); if (pageIndex >= 0) setActivePage(pageIndex)
       flash(`已打点 ${formatTime(at)} · 第 1 句开始`)
@@ -293,7 +299,7 @@ function App() {
     const keepPreviousEnd = following != null || flags.some(flag => flag.segmentId === previous.id && (flag.kind === 'end' || flag.id.startsWith('recovered-')))
     nextFlags.push({ id: `flag-${Date.now()}`, time: at, segmentId: next?.id || previous.id, kind: next ? 'transition' : 'end' })
     nextFlags.sort((a, b) => a.time - b.time)
-    setProject(p => sortSegmentsByTiming({
+    setProject(p => ({
       ...p,
       flags: nextFlags,
       segments: p.segments.map((s, i) => i === index - 1
@@ -521,7 +527,10 @@ function App() {
         used.add(existing.id)
         return { ...existing, text: candidate.text, startTime: candidate.startTime, endTime: candidate.endTime, timingSet: true }
       })
-      return sortSegmentsByTiming({ ...previous, segments: [...previous.segments.filter(segment => !used.has(segment.id)), ...proposed], flags: [] })
+      const updates = new Map(proposed.filter(segment => used.has(segment.id)).map(segment => [segment.id, segment]))
+      const previouslyMarked = new Set((previous.flags || []).filter(flag => flag.kind !== 'end').map(flag => flag.segmentId))
+      const segments = previous.segments.map(segment => updates.get(segment.id) || (previouslyMarked.has(segment.id) ? { ...segment, timingSet: true } : segment))
+      return { ...previous, segments: [...segments, ...proposed.filter(segment => !used.has(segment.id))], flags: [] }
     })
     setAutoCandidates(null); selectOne(null); setTool('select')
     flash(`已应用 ${chosen.length} 条候选；请重点试听待核对的乐句`)

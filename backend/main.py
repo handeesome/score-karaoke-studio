@@ -154,12 +154,14 @@ def validate_project(project: dict):
                     errors.append(f"{label}的标注区域超出页面范围")
             except (KeyError, TypeError, ValueError):
                 errors.append(f"{label}缺少有效的标注区域")
-    for previous, current in zip(segments, segments[1:]):
+    timed_ids = {flag.get("segmentId") for flag in project.get("flags", []) if flag.get("kind") != "end"}
+    timed_segments = [segment for segment in segments if segment.get("timingSet") or segment.get("id") in timed_ids]
+    for previous, current in zip(timed_segments, timed_segments[1:]):
         gap = float(current["startTime"]) - float(previous["endTime"])
         if gap < -0.05:
-            warnings.append(f"第 {segments.index(current) + 1} 句与前一句有 {abs(gap):.2f} 秒重叠")
+            warnings.append(f"第 {project['segments'].index(current) + 1} 句与前一句有 {abs(gap):.2f} 秒重叠")
         elif gap > 2.0:
-            warnings.append(f"第 {segments.index(current) + 1} 句前有 {gap:.2f} 秒空档")
+            warnings.append(f"第 {project['segments'].index(current) + 1} 句前有 {gap:.2f} 秒空档")
     return {"valid": not errors, "errors": errors, "warnings": warnings, "duration": duration, "audioPath": audio_path}
 
 

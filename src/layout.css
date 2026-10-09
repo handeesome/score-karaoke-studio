@@ -181,6 +181,8 @@ body{min-width:0;height:100dvh;overflow:hidden}
 .waveform-placeholder{position:absolute;inset:22px 0 0;display:grid;place-items:center;color:#9ca79c;font-size:10px;pointer-events:none}
 .wave-stage .timeline-block{z-index:2;top:5px;height:20px;min-width:8px;padding:0 2px;display:flex;align-items:center;font-size:10px;font-weight:600;line-height:18px;cursor:grab;touch-action:none;user-select:none}
 .wave-stage .timeline-block.current{z-index:4}
+.wave-stage .timeline-block.unassigned{z-index:1;opacity:.45;border-style:dashed}
+.wave-stage .timeline-block.unassigned.current{z-index:4;opacity:1}
 .timeline-block-text{min-width:0;overflow:hidden;white-space:nowrap;pointer-events:none}
 .timeline-resize-grip{display:none;position:absolute;z-index:1;top:0;bottom:0;width:8px;cursor:ew-resize}
 .timeline-block.current .timeline-resize-grip{display:block}

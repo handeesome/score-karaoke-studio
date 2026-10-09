@@ -28,6 +28,7 @@ class ProjectSegment(BaseModel):
     regions: list[SegmentRegion] | None = None
     startTime: float = Field(ge=0)
     endTime: float = Field(gt=0)
+    timingSet: bool = False
     direction: str = "left-to-right"
     text: str | None = None
     @model_validator(mode="after")
@@ -43,6 +44,7 @@ class ProjectDocument(BaseModel):
     version: int = 1
     projectName: str = "未命名歌曲"
     projectId: str | None = None
+    scoreTimingBound: bool = False
     source: dict
     pages: list[dict]
     segments: list[ProjectSegment]
