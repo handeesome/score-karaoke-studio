@@ -54,12 +54,11 @@ function Get-PythonCommand {
     throw '需要先安装 Python 3.11，并勾选安装程序中的“Add python.exe to PATH”。'
 }
 
+$job = $null
 try {
-    if ((Test-Backend) -and (Test-Frontend)) {
-        Start-Process $frontendUrl
-        exit 0
+    if ((Test-Port 8000) -or (Test-Port 5173)) {
+        throw '端口 8000 或 5173 已被占用。请先关闭旧的谱间服务或占用端口的程序。'
     }
-
     $node = Get-Command node.exe -ErrorAction SilentlyContinue
     $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
     if (-not $node -or -not $npm) { throw '需要先安装 Node.js 20（含 npm），然后重新双击启动文件。' }
@@ -116,31 +115,34 @@ try {
         Write-Warning 'Tesseract 缺少 chi_sim 中文语言包；自动框选和自动对齐需要安装该语言包。'
     }
 
-    if (-not (Test-Backend)) {
-        if (Test-Port 8000) { throw '端口 8000 已被其他程序占用。请关闭占用程序后重试。' }
-        Write-Host '正在启动本地后端…'
-        $backendLog = Join-Path $runtime 'backend-error.log'
-        $backend = Start-Process -FilePath $venvPython -ArgumentList @('-m', 'uvicorn', 'backend.main:app', '--host', '127.0.0.1', '--port', '8000') -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput (Join-Path $runtime 'backend-output.log') -RedirectStandardError $backendLog -PassThru
-        @{ Id = $backend.Id; Started = $backend.StartTime.ToUniversalTime().Ticks } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $runtime 'backend-process.json')
-        Wait-Ready ${function:Test-Backend} '后端' $backendLog
-    }
+    Add-Type -Path (Join-Path $PSScriptRoot 'ProcessJob.cs')
+    $job = [ProcessJob]::new()
 
-    if (-not (Test-Frontend)) {
-        if (Test-Port 5173) { throw '端口 5173 已被其他程序占用。请关闭占用程序后重试。' }
-        Write-Host '正在启动网页界面…'
-        $frontendLog = Join-Path $runtime 'frontend-error.log'
-        $frontend = Start-Process -FilePath $node.Source -ArgumentList @("`"$viteScript`"", '--host', '127.0.0.1', '--port', '5173', '--strictPort') -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput (Join-Path $runtime 'frontend-output.log') -RedirectStandardError $frontendLog -PassThru
-        @{ Id = $frontend.Id; Started = $frontend.StartTime.ToUniversalTime().Ticks } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $runtime 'frontend-process.json')
-        Wait-Ready ${function:Test-Frontend} '网页界面' $frontendLog
-    }
+    Write-Host '正在启动本地后端…'
+    $backendLog = Join-Path $runtime 'backend-error.log'
+    $backend = Start-Process -FilePath $venvPython -ArgumentList @('-m', 'uvicorn', 'backend.main:app', '--host', '127.0.0.1', '--port', '8000') -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput (Join-Path $runtime 'backend-output.log') -RedirectStandardError $backendLog -PassThru
+    $job.Add($backend)
+    Wait-Ready ${function:Test-Backend} '后端' $backendLog
+
+    Write-Host '正在启动网页界面…'
+    $frontendLog = Join-Path $runtime 'frontend-error.log'
+    $frontend = Start-Process -FilePath $node.Source -ArgumentList @("`"$viteScript`"", '--host', '127.0.0.1', '--port', '5173', '--strictPort') -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput (Join-Path $runtime 'frontend-output.log') -RedirectStandardError $frontendLog -PassThru
+    $job.Add($frontend)
+    Wait-Ready ${function:Test-Frontend} '网页界面' $frontendLog
 
     Write-Host '谱间已就绪，正在打开浏览器。'
     Start-Process $frontendUrl
-    exit 0
+    Write-Host '请保持此窗口打开；关闭窗口时，前后端服务会一起关闭。'
+    while (-not $backend.HasExited -and -not $frontend.HasExited) {
+        Start-Sleep -Seconds 1
+    }
+    throw '一项服务已退出。请查看 .launcher 目录中的日志。'
 } catch {
     foreach ($started in @($frontend, $backend)) {
         if ($started) { Stop-Process -Id $started.Id -ErrorAction SilentlyContinue }
     }
     Write-Host "启动失败：$($_.Exception.Message)" -ForegroundColor Red
     exit 1
+} finally {
+    if ($job) { $job.Dispose() }
 }
