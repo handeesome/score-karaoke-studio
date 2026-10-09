@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import re
 import shutil
 import subprocess
 from difflib import SequenceMatcher
 from pathlib import Path
 from statistics import median
+from typing import Callable
 
 import numpy as np
 from PIL import Image
@@ -36,10 +38,11 @@ def _tesseract() -> str:
     raise RuntimeError("缺少 Tesseract OCR，请安装中文识别语言包后重试")
 
 
-def read_score_rows(pages: list[dict], media_dir: Path) -> list[dict]:
+def read_score_rows(pages: list[dict], media_dir: Path,
+                    on_page: Callable[[int, int], None] | None = None) -> list[dict]:
     """Read lyric rows and rearrange repeated verse rows into singing order."""
     all_systems: list[list[dict]] = []
-    for page in pages:
+    for page_index, page in enumerate(pages):
         url = page.get("image", "")
         if not url.startswith("/media/"):
             continue
@@ -99,7 +102,11 @@ def read_score_rows(pages: list[dict], media_dir: Path) -> list[dict]:
             }
             region["width"] = min(region["width"], 1 - region["x"])
             region["height"] = min(region["height"], 1 - region["y"])
-            rows.append({"pageId": page["id"], "text": text, "region": region, "y": (top + bottom) / 2})
+            rows.append({
+                "pageId": page["id"], "text": text, "region": region, "y": (top + bottom) / 2,
+                "words": [{"text": item["text"], "x": item["x"] / image.width,
+                           "width": item["width"] / image.width} for item in group],
+            })
         if not rows:
             continue
         rows.sort(key=lambda item: item["y"])
@@ -112,6 +119,8 @@ def read_score_rows(pages: list[dict], media_dir: Path) -> list[dict]:
         # Isolated headings and credits above/below the score are not lyric verses.
         systems = [system for system in systems if len(system) >= 2]
         all_systems.extend(systems)
+        if on_page:
+            on_page(page_index + 1, len(pages))
     if not all_systems:
         raise RuntimeError("没有识别出可用的歌词行；可先手工划行再自动对时")
     # A score with parallel verses is read across all staves for verse 1, then verse 2.
@@ -119,6 +128,13 @@ def read_score_rows(pages: list[dict], media_dir: Path) -> list[dict]:
     if verse_count > 4 or sum(len(system) == verse_count for system in all_systems) < max(1, len(all_systems) // 2):
         return [row for system in all_systems for row in system]
     return [system[verse] for verse in range(verse_count) for system in all_systems if verse < len(system)]
+
+
+def text_in_region(row: dict, region: dict) -> str:
+    """Use the score OCR's word positions to read one lyric box, not its whole staff row."""
+    left, right = region["x"] - .004, region["x"] + region["width"] + .004
+    return "".join(word["text"] for word in row.get("words", [])
+                   if left <= word["x"] + word["width"] / 2 <= right)
 
 
 def _similarity(score: str, heard: str) -> float:
@@ -224,6 +240,7 @@ def align_rows(rows: list[dict], transcript: list[dict], duration: float) -> lis
         end = max(start + .1, min(duration, next_start - .08))
         result.append({
             "pageId": row["pageId"], "region": row["region"], "text": row["text"],
+            **({"segmentId": row["segmentId"]} if row.get("segmentId") else {}),
             "startTime": round(start, 3), "endTime": round(end, 3),
             "confidence": round(confidence[index], 2), "matchedText": matches[index],
             "source": "识别匹配" if confidence[index] else "按相邻乐句推算",
@@ -310,20 +327,122 @@ def append_repeated_tail(candidates: list[dict], transcript: list[dict], duratio
     return candidates
 
 
-def suggest(project: dict, media_dir: Path, models_dir: Path, audio_path: Path, duration: float, update=lambda _: None) -> list[dict]:
+def score_box_rows(project: dict, rows: list[dict], media_dir: Path) -> list[dict]:
+    """Use existing annotation boxes as the score order; auto-box only an empty score."""
+    segments = project.get("segments") or []
+    if not segments:
+        from backend.auto_boxes import suggest_boxes
+
+        return [{"pageId": box["pageId"], "region": box["region"], "text": box["sourceText"]}
+                for box in suggest_boxes(project.get("pages", []), media_dir, rows)]
+
+    result = []
+    for segment in segments:
+        parts = segment.get("regions") or [{"pageId": segment["pageId"], "region": segment["region"]}]
+        texts = []
+        for part in parts:
+            region = part["region"]
+            center = region["y"] + region["height"] / 2
+            page_rows = [row for row in rows if row["pageId"] == part["pageId"]]
+            if not page_rows:
+                continue
+            row = min(page_rows, key=lambda item: abs(item["region"]["y"] + item["region"]["height"] / 2 - center))
+            texts.append(text_in_region(row, region))
+        text = "".join(texts) or segment.get("text") or ""
+        result.append({"pageId": segment["pageId"], "region": segment["region"],
+                       "segmentId": segment["id"], "text": text})
+    return result
+
+
+def refine_with_vocal_waveform(candidates: list[dict], waveform: dict, duration: float) -> list[dict]:
+    """Move rough phrase starts to a nearby vocal dip followed by a rise."""
+    levels = waveform.get("levels") or []
+    wave_duration = float(waveform.get("duration") or 0)
+    if len(levels) < 8 or wave_duration <= 0:
+        return candidates
+    step = wave_duration / len(levels)
+    intervals = [right["startTime"] - left["startTime"] for left, right in zip(candidates, candidates[1:])]
+    positive = [value for value in intervals if value > .5]
+    minimum_gap = min(2.5, max(.7, median(positive) * .6)) if positive else .7
+    previous = -minimum_gap
+    for index, item in enumerate(candidates):
+        estimate = float(item["startTime"])
+        radius = 3.0 if index == 0 else 2.0 if item["confidence"] < .35 else 1.5
+        upper = (float(candidates[index + 1]["startTime"]) + 1.0) if index + 1 < len(candidates) else duration
+        left = max(3, int((estimate - radius) / step))
+        search_end = max(estimate + radius, previous + minimum_gap + 2.0)
+        right = min(len(levels) - 3, int(search_end / step) + 1)
+        choices = []
+        for position in range(left, right):
+            value = levels[position]
+            if value > levels[position - 1] or value > levels[position + 1]:
+                continue
+            before = max(levels[position - 3:position])
+            after = max(levels[position + 1:position + 4])
+            starts_after_silence = index == 0 and before < .05 and after >= .18
+            if (before < .18 and not starts_after_silence) or after < .18:
+                continue
+            onset = (position + 1) * step
+            if onset < previous + minimum_gap or onset >= upper:
+                continue
+            contrast = (after if starts_after_silence else min(before, after)) - value
+            distance_weight = .15 if item["confidence"] < .35 else .3
+            score = contrast * 1.5 + (1 - value) * .5 - abs(onset - estimate) * distance_weight
+            choices.append((score, onset, contrast))
+        chosen = max(choices) if choices else None
+        if chosen is not None:
+            item["startTime"] = round(chosen[1], 3)
+            item["source"] = "歌词匹配＋人声低谷" if item["confidence"] else "歌词顺序＋人声低谷"
+            if item["confidence"] == 0:
+                item["confidence"] = round(min(.34, max(.15, chosen[2] * .4)), 2)
+        previous = float(item["startTime"])
+    for index, item in enumerate(candidates):
+        next_start = float(candidates[index + 1]["startTime"]) if index + 1 < len(candidates) else duration
+        item["endTime"] = round(max(float(item["startTime"]) + .1, min(duration, next_start - .08)), 3)
+    return candidates
+
+
+def suggest(project: dict, media_dir: Path, models_dir: Path, audio_path: Path, duration: float,
+            update: Callable[[str, int], None] = lambda _stage, _percent: None) -> list[dict]:
     from faster_whisper import WhisperModel
 
-    update("正在识别乐谱歌词")
-    rows = read_score_rows(project.get("pages", []), media_dir)
-    update(f"已找到 {len(rows)} 行歌词，正在识别音频")
+    update("正在识别乐谱歌词", 5)
+    rows = read_score_rows(project.get("pages", []), media_dir,
+                           lambda done, total: update(f"已识别 {done}/{total} 页乐谱", 5 + round(15 * done / total)))
+    boxes = score_box_rows(project, rows, media_dir)
+    update(f"已找到 {len(boxes)} 个歌词框，正在加载音频模型", 25)
     model = WhisperModel("base", device="cpu", compute_type="int8", download_root=str(models_dir))
-    # Music confuses speech VAD: it can remove sustained vocals along with accompaniment.
-    chunks, _ = model.transcribe(str(audio_path), language="zh", word_timestamps=False,
-                                 beam_size=5, condition_on_previous_text=False, vad_filter=False)
     transcript = []
-    for chunk in chunks:
-        transcript.append({"start": chunk.start, "end": chunk.end, "text": chunk.text})
-    update("正在按歌词顺序和波形起音匹配时间")
-    candidates = align_rows(rows, transcript, duration)
-    candidates = append_repeated_tail(candidates, transcript, duration)
+    last_percent = 30
+    # Short clips and word timestamps keep music from shifting an entire song's
+    # transcription when an earlier refrain was recognized incorrectly.
+    clip_starts = [0.0]
+    if duration > 95:
+        clip_starts.append(90.0)
+        clip_starts.extend(float(value) for value in range(240, int(duration), 150))
+    for start, end in zip(clip_starts, [*clip_starts[1:], duration]):
+        # Music confuses speech VAD: it can remove sustained vocals with accompaniment.
+        chunks, _ = model.transcribe(str(audio_path), language="zh",
+                                     clip_timestamps=f"{start:.3f},{end:.3f}", word_timestamps=True,
+                                     beam_size=5, condition_on_previous_text=False, vad_filter=False)
+        for chunk in chunks:
+            transcript.append({"start": chunk.start, "end": chunk.end, "text": chunk.text})
+            percent = min(78, 30 + round(48 * chunk.end / duration))
+            if percent >= last_percent + 2:
+                update(f"正在识别音频唱词 · {chunk.end:.0f}/{duration:.0f} 秒", percent)
+                last_percent = percent
+    update("正在按歌词框顺序匹配唱词", 82)
+    candidates = align_rows(boxes, transcript, duration)
+    if not project.get("segments"):
+        candidates = append_repeated_tail(candidates, transcript, duration)
+    from backend.vocal_waveform import cache_key, separator_available, vocal_waveform_for_audio
+
+    vocal_cache = models_dir.parent / "vocals"
+    cached = vocal_cache / cache_key(audio_path) / "waveform.json"
+    if cached.is_file() or separator_available():
+        update("正在按人声波形的低谷校准换句时间", 90)
+        waveform = (json.loads(cached.read_text(encoding="utf-8")) if cached.is_file()
+                    else vocal_waveform_for_audio(audio_path, vocal_cache, lambda stage: update(stage, 90)))
+        return refine_with_vocal_waveform(candidates, waveform, duration)
+    update("未安装人声分离组件，正在用原音频起音校准", 90)
     return refine_interpolated_starts(candidates, audio_path)

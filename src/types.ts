@@ -3,7 +3,7 @@ export interface ScorePage { id: string; image: string; width: number; height: n
 export interface KaraokeFlag { id: string; time: number; segmentId: string; kind: 'start' | 'transition' | 'end' }
 export interface SegmentRegion { pageId: string; region: Region }
 export interface Segment { id: string; pageId: string; region: Region; regions?: SegmentRegion[]; startTime: number; endTime: number; timingSet?: boolean; direction: 'left-to-right'; text?: string }
-export interface AutoCandidate { pageId: string; region: Region; text: string; startTime: number; endTime: number; confidence: number; matchedText: string; source: string }
+export interface AutoCandidate { pageId: string; region: Region; segmentId?: string; text: string; startTime: number; endTime: number; confidence: number; matchedText: string; source: string }
 export interface AutoBoxCandidate { pageId: string; region: Region; sourceText: string; row: number; part: number }
 export interface ExportSettings { preset: 'landscape' | 'portrait' | 'social' | 'square' | 'custom'; width: number; height: number; fps: number; scoreZoom: number }
 export interface Project { version: 1; projectName: string; projectId?: string | null; scoreTimingBound?: boolean; source: { pdf: string | null; audio: string | null; audioUrl?: string | null }; pages: ScorePage[]; segments: Segment[]; flags?: KaraokeFlag[]; audioDuration?: number | null; export?: ExportSettings; highlight: { opacity: number } }

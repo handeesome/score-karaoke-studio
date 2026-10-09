@@ -84,6 +84,14 @@ body{min-width:0;height:100dvh;overflow:hidden}
 .file-action{flex:none;margin-left:auto;padding:4px 6px;border-radius:5px;background:#edf3ee;color:#52745b;font-size:9px;font-weight:700}
 .rail-project:hover .file-action{background:#dfeadf;color:#385844}
 .modal-backdrop{position:fixed;z-index:20;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;background:#171a1778;backdrop-filter:blur(3px)}
+.analysis-progress-dialog{width:min(360px,calc(100vw - 48px));padding:26px 28px 23px;text-align:center;border:1px solid #e2e9e1;border-radius:14px;background:#fff;box-shadow:0 24px 80px #0003}
+.analysis-progress-icon{width:43px;height:43px;display:grid;place-items:center;margin:0 auto 12px;border-radius:12px;background:#eaf1e9;color:#53765b}
+.analysis-progress-dialog h2{margin:0;color:#303a31;font-size:15px}
+.analysis-progress-value{display:block;margin:13px 0 10px;color:#416d4c;font-size:28px;font-variant-numeric:tabular-nums}
+.analysis-progress-track{height:7px;overflow:hidden;border-radius:8px;background:#e9eee8}
+.analysis-progress-track span{display:block;height:100%;border-radius:8px;background:#60896a;transition:width .3s ease}
+.analysis-progress-dialog p{min-height:18px;margin:13px 0 8px;color:#637166;font-size:11px}
+.analysis-progress-dialog small{display:flex;align-items:center;justify-content:center;gap:5px;color:#929c91;font-size:10px}
 .export-dialog{width:min(900px,96vw);max-height:92dvh;display:flex;flex-direction:column;overflow:hidden;border:1px solid #e8e9e3;border-radius:12px;background:#fff;box-shadow:0 24px 80px #0003}
 .export-dialog-header{display:flex;align-items:center;gap:11px;padding:17px 20px;border-bottom:1px solid #eeefe9}
 .export-title-icon{width:34px;height:34px;display:grid;place-items:center;border-radius:9px;background:#eaf0eb;color:#54765b}

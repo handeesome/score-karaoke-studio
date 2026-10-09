@@ -2,15 +2,22 @@
 
 from math import ceil
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 from PIL import Image
 
-from backend.auto_alignment import read_score_rows
+from backend.auto_alignment import read_score_rows, text_in_region
 
 
-def suggest_boxes(pages: list[dict], media_dir: Path) -> list[dict]:
-    rows = read_score_rows(pages, media_dir)
+def suggest_boxes(pages: list[dict], media_dir: Path, rows: list[dict] | None = None,
+                  update: Callable[[str, int], None] | None = None) -> list[dict]:
+    if rows is None:
+        if update:
+            update("正在识别乐谱上的歌词行", 5)
+        rows = read_score_rows(pages, media_dir,
+                               (lambda done, total: update(f"已识别 {done}/{total} 页乐谱", 5 + round(60 * done / total)))
+                               if update else None)
     page_paths = {}
     for page in pages:
         url = page.get("image", "")
@@ -38,6 +45,8 @@ def suggest_boxes(pages: list[dict], media_dir: Path) -> list[dict]:
 
     boxes: list[dict] = []
     for row_index, row in enumerate(rows):
+        if update:
+            update(f"正在拆分第 {row_index + 1}/{len(rows)} 行歌词", 65 + round(30 * row_index / len(rows)))
         gray = page_grays.get(row["pageId"])
         if gray is None:
             continue
@@ -101,11 +110,12 @@ def suggest_boxes(pages: list[dict], media_dir: Path) -> list[dict]:
             x1 = min(image_width, left + int(within[-1]) + 6)
             if x1 - x0 < crop.shape[0] * 1.1:
                 continue
+            box_region = {"x": x0 / image_width, "y": box_top / image_height,
+                          "width": (x1 - x0) / image_width, "height": (box_bottom - box_top) / image_height}
             boxes.append({
                 "pageId": row["pageId"],
-                "region": {"x": x0 / image_width, "y": box_top / image_height,
-                           "width": (x1 - x0) / image_width, "height": (box_bottom - box_top) / image_height},
-                "sourceText": row["text"], "row": row_index + 1, "part": part,
+                "region": box_region, "sourceText": text_in_region(row, box_region),
+                "row": row_index + 1, "part": part,
             })
     if not boxes:
         raise RuntimeError("没有找到可用的歌词标注区域")

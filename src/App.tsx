@@ -5,6 +5,7 @@ import ExportDialog from './components/ExportDialog'
 import AutoAlignDialog from './components/AutoAlignDialog'
 import TimelinePanel from './components/TimelinePanel'
 import AutoBoxDialog from './components/AutoBoxDialog'
+import ProgressDialog from './components/ProgressDialog'
 import { initialProject } from './types'
 import { bindTimingToScoreOrder, calculateCameraTarget, calculateKaraokeProgress, fitRegion, formatTime, migrateLegacyCuts, recoverFlagsFromTiming, regionPositionKey, regionReveal, segmentRegions, sharedRegionKey } from './utils'
 
@@ -40,6 +41,7 @@ function App() {
   const [autoCandidates, setAutoCandidates] = useState<AutoCandidate[] | null>(null)
   const [boxCandidates, setBoxCandidates] = useState<AutoBoxCandidate[] | null>(null)
   const [boxBusy, setBoxBusy] = useState(false)
+  const [analysisProgress, setAnalysisProgress] = useState<{ kind: 'boxes' | 'align'; percent: number; stage: string } | null>(null)
   const [tool, setTool] = useState<'select' | 'row' | 'cut'>('select')
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
@@ -482,13 +484,24 @@ function App() {
   const startAutoBoxes = async () => {
     if (!project.pages.length || boxBusy) return
     setBoxBusy(true)
+    setAnalysisProgress({ kind: 'boxes', percent: 0, stage: '正在准备乐谱' })
+    const projectId = project.projectId
     try {
       const response = await fetch(`${API}/api/auto-boxes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pages: project.pages }) })
-      const data = await response.json()
-      if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '自动框选失败')
-      setBoxCandidates(data.candidates || [])
+      const started = await response.json()
+      if (!response.ok) throw new Error(typeof started.detail === 'string' ? started.detail : '自动框选失败')
+      for (;;) {
+        await new Promise(resolve => window.setTimeout(resolve, 600))
+        const statusResponse = await fetch(`${API}/api/auto-boxes/${started.jobId}`)
+        if (!statusResponse.ok) throw new Error('无法读取自动框选进度')
+        const status = await statusResponse.json()
+        if (projectRef.current.projectId !== projectId) return
+        setAnalysisProgress({ kind: 'boxes', percent: status.progress || 0, stage: status.stage || '正在识别乐谱' })
+        if (status.status === 'failed') throw new Error(status.error || '自动框选失败')
+        if (status.status === 'completed') { setBoxCandidates(status.candidates || []); return }
+      }
     } catch (error) { flash(error instanceof Error ? error.message : '自动框选失败') }
-    finally { setBoxBusy(false) }
+    finally { setBoxBusy(false); setAnalysisProgress(null) }
   }
   const applyAutoBoxes = (indices: number[], replace: boolean) => {
     if (!boxCandidates || !indices.length) return
@@ -520,6 +533,7 @@ function App() {
     if (!project.projectId || !project.pages.length || !project.source.audioUrl) { flash('请先导入 PDF 乐谱和 MP3 音频'); return }
     if (autoBusy) return
     setAutoBusy(true); setAutoStage('正在准备自动对齐')
+    setAnalysisProgress({ kind: 'align', percent: 0, stage: '正在准备自动对齐' })
     const projectId = project.projectId
     try {
       await persistProject(project)
@@ -533,40 +547,44 @@ function App() {
         const status = await statusResponse.json()
         if (projectRef.current.projectId !== projectId) return
         setAutoStage(status.stage || '正在处理')
+        setAnalysisProgress({ kind: 'align', percent: status.progress || 0, stage: status.stage || '正在处理' })
         if (status.status === 'failed') throw new Error(status.error || '自动对齐失败')
         if (status.status === 'completed') { setAutoCandidates(status.candidates || []); return }
       }
     } catch (error) { flash(error instanceof Error ? error.message : '自动对齐失败') }
-    finally { setAutoBusy(false); setAutoStage('') }
+    finally { setAutoBusy(false); setAutoStage(''); setAnalysisProgress(null) }
   }
   const applyAutoCandidates = (indices: number[]) => {
     if (!autoCandidates) return
     const chosen = indices.map(index => autoCandidates[index]).filter(Boolean)
     if (!chosen.length) return
+    const marked = new Set((project.flags || []).filter(flag => flag.kind !== 'end').map(flag => flag.segmentId))
+    const actionable = chosen.filter(candidate => {
+      const segment = project.segments.find(item => item.id === candidate.segmentId)
+      return !segment || (!segment.timingSet && !marked.has(segment.id))
+    })
+    if (!actionable.length) {
+      setAutoCandidates(null)
+      flash('这些乐句已有时间，原有打点保持不变')
+      return
+    }
     lastHistoryAt.current = 0
     setProject(previous => {
-      const used = new Set<string>()
-      const proposed = chosen.map((candidate, index): Segment => {
-        const cy = candidate.region.y + candidate.region.height / 2
-        const cx = candidate.region.x + candidate.region.width / 2
-        const existing = previous.segments.filter(segment => {
-          if (used.has(segment.id) || segment.pageId !== candidate.pageId) return false
-          const top = Math.max(segment.region.y, candidate.region.y)
-          const bottom = Math.min(segment.region.y + segment.region.height, candidate.region.y + candidate.region.height)
-          const overlap = Math.max(0, bottom - top) / Math.min(segment.region.height, candidate.region.height)
-          return overlap > .28 && segment.region.height <= candidate.region.height * 2 && Math.abs(segment.region.x + segment.region.width / 2 - cx) < .25
-        }).sort((a, b) => Math.abs(a.region.y + a.region.height / 2 - cy) - Math.abs(b.region.y + b.region.height / 2 - cy))[0]
-        if (!existing) return { id: `auto-${Date.now()}-${index}`, pageId: candidate.pageId, region: fitRegion(candidate.region), startTime: candidate.startTime, endTime: candidate.endTime, timingSet: true, direction: 'left-to-right', text: candidate.text }
-        used.add(existing.id)
-        return { ...existing, text: candidate.text, startTime: candidate.startTime, endTime: candidate.endTime, timingSet: true }
-      })
-      const updates = new Map(proposed.filter(segment => used.has(segment.id)).map(segment => [segment.id, segment]))
-      const previouslyMarked = new Set((previous.flags || []).filter(flag => flag.kind !== 'end').map(flag => flag.segmentId))
-      const segments = previous.segments.map(segment => updates.get(segment.id) || (previouslyMarked.has(segment.id) ? { ...segment, timingSet: true } : segment))
-      return { ...previous, segments: [...segments, ...proposed.filter(segment => !used.has(segment.id))], flags: [] }
+      const updates = new Map(actionable.filter(candidate => candidate.segmentId).map(candidate => [candidate.segmentId!, candidate]))
+      const additions: Segment[] = actionable.filter(candidate => !candidate.segmentId || !previous.segments.some(segment => segment.id === candidate.segmentId)).map((candidate, index) => ({
+        id: `auto-${Date.now()}-${index}`, pageId: candidate.pageId, region: fitRegion(candidate.region),
+        startTime: candidate.startTime, endTime: candidate.endTime, timingSet: true,
+        direction: 'left-to-right', text: candidate.text,
+      }))
+      return { ...previous, segments: [
+        ...previous.segments.map(segment => {
+          const candidate = updates.get(segment.id)
+          return candidate ? { ...segment, text: candidate.text || segment.text, startTime: candidate.startTime, endTime: candidate.endTime, timingSet: true } : segment
+        }), ...additions,
+      ] }
     })
     setAutoCandidates(null); selectOne(null); setTool('select')
-    flash(`已应用 ${chosen.length} 条候选；请重点试听待核对的乐句`)
+    flash(`已填入 ${actionable.length} 条乐句的时间；原有打点已保留`)
   }
   const openExport = async () => {
     if (!project.projectId) { flash('请先选择乐谱 PDF'); return }
@@ -718,6 +736,7 @@ function App() {
       <TimelinePanel audioUrl={project.source.audioUrl} audioName={project.source.audio} duration={duration || project.audioDuration || 0} flags={visibleFlags} segments={project.segments} selected={selected} time={time} playing={playing} onSelect={id => { selectOne(id); const pageIndex = project.pages.findIndex(page => page.id === project.segments.find(segment => segment.id === id)?.pageId); if (pageIndex >= 0) setActivePage(pageIndex) }} onSeek={seek} onMoveSegment={(id, startTime, endTime) => updateSegment(id, { startTime, endTime })}/>
     </div>
     {resetOpen && <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget) setResetOpen(false) }}><div className="reset-dialog" role="dialog" aria-modal="true" aria-labelledby="reset-title" aria-describedby="reset-description"><div className="reset-dialog-icon"><RotateCcw size={20}/></div><h2 id="reset-title">重新标注这首歌？</h2><p id="reset-description">将清空 {project.segments.length} 条乐句标注和 {(project.flags || []).length} 个打点。乐谱与音频会保留。</p><div className="reset-dialog-actions"><button className="button button-secondary" autoFocus onClick={() => setResetOpen(false)}>取消</button><button className="button reset-confirm-button" onClick={resetAnnotations}>清空标注</button></div><small>清空后可立即按 Ctrl+Z 恢复。</small></div></div>}
+    {analysisProgress && <ProgressDialog key={analysisProgress.kind} kind={analysisProgress.kind} percent={analysisProgress.percent} stage={analysisProgress.stage}/>}
     {autoCandidates && <AutoAlignDialog candidates={autoCandidates} existingCount={project.segments.length} playing={playing} onClose={() => setAutoCandidates(null)} onListen={at => { seek(at); const audio = audioRef.current; if (audio) { void audio.play(); setPlaying(true) } }} onPause={() => { audioRef.current?.pause(); setPlaying(false) }} onApply={applyAutoCandidates}/>}
     {boxCandidates && <AutoBoxDialog pages={project.pages} candidates={boxCandidates} existingCount={project.segments.length} onClose={() => setBoxCandidates(null)} onApply={applyAutoBoxes}/>}
     <input ref={pdfInput} type="file" accept="application/pdf,.pdf" hidden onChange={e => { void onPdf(e.target.files?.[0]); e.currentTarget.value = '' }}/><input ref={audioInput} type="file" accept="audio/mpeg,audio/mp3,.mp3,audio/*" hidden onChange={e => { void onAudio(e.target.files?.[0]); e.currentTarget.value = '' }}/><audio ref={audioRef} onLoadedMetadata={e => { const next = e.currentTarget.duration; setDuration(next); setProject(p => ({ ...p, audioDuration: next })) }} onTimeUpdate={e => setTime(e.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)}/>{message && <div className="toast"><Check size={15}/>{message}</div>}

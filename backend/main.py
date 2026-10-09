@@ -39,11 +39,14 @@ MEDIA.mkdir(exist_ok=True)
 EXPORTS.mkdir(exist_ok=True)
 executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="score-export")
 alignment_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="score-alignment")
+box_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="score-boxes")
 vocal_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="score-vocals")
 jobs: dict[str, dict] = {}
 jobs_lock = Lock()
 alignment_jobs: dict[str, dict] = {}
 alignment_lock = Lock()
+box_jobs: dict[str, dict] = {}
+box_lock = Lock()
 vocal_jobs: dict[str, dict] = {}
 vocal_jobs_by_audio: dict[str, str] = {}
 vocal_lock = Lock()
@@ -181,16 +184,29 @@ def _run_export(job_id: str, project: dict, audio_path: Path, output_path: Path,
 
 
 def _run_alignment(job_id: str, project: dict, audio_path: Path, duration: float):
-    def update(stage: str):
+    def update(stage: str, progress: int):
         with alignment_lock:
-            alignment_jobs[job_id].update(status="running", stage=stage)
+            alignment_jobs[job_id].update(status="running", stage=stage, progress=progress)
     try:
         candidates = suggest_alignment(project, MEDIA, ROOT.parent / "reference" / "models", audio_path, duration, update)
         with alignment_lock:
-            alignment_jobs[job_id].update(status="completed", stage="候选标注已生成", candidates=candidates)
+            alignment_jobs[job_id].update(status="completed", stage="候选标注已生成", progress=100, candidates=candidates)
     except Exception as error:
         with alignment_lock:
             alignment_jobs[job_id].update(status="failed", error=str(error))
+
+
+def _run_auto_boxes(job_id: str, pages: list[dict]):
+    def update(stage: str, progress: int):
+        with box_lock:
+            box_jobs[job_id].update(status="running", stage=stage, progress=progress)
+    try:
+        candidates = suggest_boxes(pages, MEDIA, update=update)
+        with box_lock:
+            box_jobs[job_id].update(status="completed", stage="候选框已生成", progress=100, candidates=candidates)
+    except Exception as error:
+        with box_lock:
+            box_jobs[job_id].update(status="failed", error=str(error))
 
 
 @app.put("/api/projects/{project_id}")
@@ -225,7 +241,7 @@ def start_auto_alignment(project_id: str):
         raise HTTPException(status_code=422, detail="无法读取音频时长")
     job_id = uuid.uuid4().hex
     with alignment_lock:
-        alignment_jobs[job_id] = {"status": "queued", "stage": "等待本地识别", "candidates": []}
+        alignment_jobs[job_id] = {"status": "queued", "stage": "等待本地识别", "progress": 0, "candidates": []}
     alignment_executor.submit(_run_alignment, job_id, project, audio_path, duration)
     return {"jobId": job_id, "status": "queued"}
 
@@ -348,10 +364,20 @@ def vocal_waveform_status(job_id: str):
 
 @app.post("/api/auto-boxes")
 def auto_boxes(request: AutoBoxesRequest):
-    try:
-        return {"candidates": suggest_boxes(request.pages, MEDIA)}
-    except (RuntimeError, ValueError) as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
+    job_id = uuid.uuid4().hex
+    with box_lock:
+        box_jobs[job_id] = {"status": "queued", "stage": "等待识别乐谱", "progress": 0, "candidates": []}
+    box_executor.submit(_run_auto_boxes, job_id, request.pages)
+    return {"jobId": job_id, "status": "queued"}
+
+
+@app.get("/api/auto-boxes/{job_id}")
+def auto_boxes_status(job_id: str):
+    with box_lock:
+        job = box_jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="找不到自动框选任务")
+        return {"jobId": job_id, **job}
 
 
 @app.post("/api/import/pdf")
