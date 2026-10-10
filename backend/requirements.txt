@@ -7,3 +7,5 @@ Pillow>=10.4,<13
 imageio-ffmpeg>=0.5.1,<1
 mutagen>=1.47,<2
 faster-whisper>=1.2,<2
+# faster-whisper 1.2.x passes metadata_errors, which PyAV 19 removed.
+av>=11,<19
