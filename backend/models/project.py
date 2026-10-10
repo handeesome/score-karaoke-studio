@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class NormalizedRegion(BaseModel):
-    """A rectangle expressed as fractions of the original PDF page."""
+    """A rectangle expressed as fractions of the score page."""
 
     x: float = Field(ge=0, le=1)
     y: float = Field(ge=0, le=1)

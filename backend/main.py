@@ -11,6 +11,7 @@ from threading import Lock
 from typing import Literal
 
 import fitz
+from PIL import Image, ImageOps
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
@@ -125,7 +126,7 @@ def validate_project(project: dict):
     warnings: list[str] = []
     segments = sorted(project.get("segments", []), key=lambda item: float(item.get("startTime", 0)))
     if not project.get("pages"):
-        errors.append("尚未导入乐谱 PDF")
+        errors.append("尚未导入乐谱")
     if not segments:
         errors.append("请至少添加一条乐句标注")
     try:
@@ -231,7 +232,7 @@ def validate_saved_project(project_id: str):
 def start_auto_alignment(project_id: str):
     project = read_project(project_id)
     if not project.get("pages"):
-        raise HTTPException(status_code=422, detail="请先导入乐谱 PDF")
+        raise HTTPException(status_code=422, detail="请先导入乐谱")
     try:
         audio_path = resolve_audio(project)
         duration = read_audio_duration(audio_path)
@@ -380,31 +381,61 @@ def auto_boxes_status(job_id: str):
         return {"jobId": job_id, **job}
 
 
-@app.post("/api/import/pdf")
-async def import_pdf(file: UploadFile = File(...)):
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="请选择 PDF 乐谱文件")
-    raw = await file.read()
-    if not raw.startswith(b"%PDF"):
-        raise HTTPException(status_code=400, detail="文件内容不是有效的 PDF")
+@app.post("/api/import/score")
+async def import_score(files: list[UploadFile] = File(...)):
+    suffixes = [Path(file.filename or "").suffix.lower() for file in files]
+    is_pdf = len(files) == 1 and suffixes == [".pdf"]
+    is_images = bool(files) and all(suffix in {".jpg", ".jpeg", ".png", ".webp"} for suffix in suffixes)
+    if not (is_pdf or is_images):
+        raise HTTPException(status_code=400, detail="请选择一个 PDF，或一次选择多张 JPG、PNG、WebP 乐谱图片")
+    if len(files) > 100:
+        raise HTTPException(status_code=400, detail="乐谱最多支持 100 页")
+    if is_images:
+        def natural_name(file: UploadFile):
+            return [(0, int(part)) if part.isdigit() else (1, part.casefold())
+                    for part in re.split(r"(\d+)", Path(file.filename or "").name)]
+        files = sorted(files, key=natural_name)
+        suffixes = [Path(file.filename or "").suffix.lower() for file in files]
     project_id = uuid.uuid4().hex
     project_dir = PROJECTS / project_id
     pages_dir = MEDIA / project_id / "pages"
     project_dir.mkdir(parents=True)
     pages_dir.mkdir(parents=True)
-    source_path = project_dir / "source.pdf"
-    source_path.write_bytes(raw)
     pages = []
     try:
-        with fitz.open(stream=raw, filetype="pdf") as document:
-            if document.page_count > 100:
-                raise HTTPException(status_code=400, detail="PDF 页数过多，请使用不超过 100 页的文件")
-            scale = 240 / 72
-            for index, page in enumerate(document):
-                pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+        if is_pdf:
+            raw = await files[0].read()
+            if not raw.startswith(b"%PDF"):
+                raise HTTPException(status_code=400, detail="文件内容不是有效的 PDF")
+            (project_dir / "source.pdf").write_bytes(raw)
+            with fitz.open(stream=raw, filetype="pdf") as document:
+                if document.page_count > 100:
+                    raise HTTPException(status_code=400, detail="PDF 页数过多，请使用不超过 100 页的文件")
+                scale = 240 / 72
+                for index, page in enumerate(document):
+                    pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+                    filename = f"page-{index + 1:03d}.png"
+                    pixmap.save(pages_dir / filename)
+                    pages.append({"id": f"page-{index + 1:03d}", "image": f"/media/{project_id}/pages/{filename}", "width": pixmap.width, "height": pixmap.height, "pdfWidth": round(page.rect.width, 2), "pdfHeight": round(page.rect.height, 2)})
+        else:
+            for index, (file, suffix) in enumerate(zip(files, suffixes)):
+                raw = await file.read()
+                if not raw:
+                    raise HTTPException(status_code=400, detail=f"第 {index + 1} 张图片是空文件")
+                with Image.open(io.BytesIO(raw)) as image:
+                    if image.format not in {"JPEG", "PNG", "WEBP"}:
+                        raise HTTPException(status_code=400, detail=f"第 {index + 1} 张图片内容不是 JPG、PNG 或 WebP")
+                    image.load()
+                    oriented = ImageOps.exif_transpose(image)
+                    if "A" in oriented.getbands() or "transparency" in oriented.info:
+                        rgba = oriented.convert("RGBA")
+                        rendered = Image.alpha_composite(Image.new("RGBA", rgba.size, "white"), rgba).convert("RGB")
+                    else:
+                        rendered = oriented.convert("RGB")
                 filename = f"page-{index + 1:03d}.png"
-                pixmap.save(pages_dir / filename)
-                pages.append({"id": f"page-{index + 1:03d}", "image": f"/media/{project_id}/pages/{filename}", "width": pixmap.width, "height": pixmap.height, "pdfWidth": round(page.rect.width, 2), "pdfHeight": round(page.rect.height, 2)})
+                rendered.save(pages_dir / filename)
+                (project_dir / f"source-{index + 1:03d}{suffix}").write_bytes(raw)
+                pages.append({"id": f"page-{index + 1:03d}", "image": f"/media/{project_id}/pages/{filename}", "width": rendered.width, "height": rendered.height})
     except HTTPException:
         shutil.rmtree(project_dir, ignore_errors=True)
         shutil.rmtree(MEDIA / project_id, ignore_errors=True)
@@ -412,8 +443,15 @@ async def import_pdf(file: UploadFile = File(...)):
     except Exception as error:
         shutil.rmtree(project_dir, ignore_errors=True)
         shutil.rmtree(MEDIA / project_id, ignore_errors=True)
-        raise HTTPException(status_code=400, detail=f"无法解析 PDF：{error}") from error
-    return {"projectId": project_id, "filename": safe_filename(file.filename), "pages": pages, "renderDpi": 240}
+        raise HTTPException(status_code=400, detail=f"无法解析乐谱：{error}") from error
+    return {"projectId": project_id, "filename": safe_filename(files[0].filename), "pages": pages, "renderDpi": 240 if is_pdf else None}
+
+
+@app.post("/api/import/pdf")
+async def import_pdf(file: UploadFile = File(...)):
+    if Path(file.filename or "").suffix.lower() != ".pdf":
+        raise HTTPException(status_code=400, detail="请选择 PDF 乐谱文件")
+    return await import_score([file])
 
 
 @app.post("/api/import/audio")

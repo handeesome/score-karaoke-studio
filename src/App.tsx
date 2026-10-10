@@ -45,7 +45,7 @@ function App() {
   const [tool, setTool] = useState<'select' | 'row' | 'cut'>('select')
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
-  const pdfInput = useRef<HTMLInputElement>(null)
+  const scoreInput = useRef<HTMLInputElement>(null)
   const audioInput = useRef<HTMLInputElement>(null)
   const canvasRef = useRef<HTMLDivElement>(null)
   const pageRef = useRef<HTMLDivElement>(null)
@@ -244,20 +244,25 @@ function App() {
     selectOne(null); setTool('select')
     flash('标注已删除；其余乐句的打点已保留，可按 Ctrl+Z 撤销')
   }
-  const onPdf = async (file?: File) => {
-    if (!file) return
+  const onScore = async (selection?: FileList | null) => {
+    const files = Array.from(selection || [])
+    if (!files.length) return
     const replacing = Boolean(project.source.pdf)
-    const form = new FormData(); form.append('file', file)
+    const form = new FormData(); files.forEach(file => form.append('files', file))
     try {
-      const response = await fetch(`${API}/api/import/pdf`, { method: 'POST', body: form })
-      if (!response.ok) throw new Error((await response.json()).detail || 'PDF 导入失败')
+      const response = await fetch(`${API}/api/import/score`, { method: 'POST', body: form })
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(typeof error.detail === 'string' ? error.detail : '乐谱导入失败')
+      }
       const data = await response.json()
       const pages: ScorePage[] = data.pages.map((p: any, i: number) => ({ id: `page-${String(i + 1).padStart(3, '0')}`, image: p.image, width: p.width, height: p.height }))
       audioRef.current?.pause()
       if (audioRef.current) audioRef.current.currentTime = 0
-      setProject(p => ({ ...p, projectId: data.projectId, projectName: data.filename.replace(/\.pdf$/i, ''), source: { ...p.source, pdf: data.filename }, pages, segments: [], flags: [] }))
+      const scoreName = data.filename.replace(/\.[^.]+$/, '')
+      setProject(p => ({ ...p, projectId: data.projectId, projectName: scoreName, source: { ...p.source, pdf: files.length > 1 ? `${scoreName} 等 ${files.length} 张` : data.filename }, pages, segments: [], flags: [] }))
       setActivePage(0); selectOne(null); setTime(0); setPlaying(false); setTool('row')
-      flash(replacing ? `已替换乐谱，原有标注已清空` : `已导入 ${pages.length} 页 PDF`)
+      flash(replacing ? '已替换乐谱，原有标注已清空' : `已导入 ${pages.length} 页乐谱`)
     } catch (error) { flash(error instanceof Error ? error.message : '无法连接渲染服务，请先启动后端') }
   }
   const onAudio = async (file?: File) => {
@@ -355,7 +360,7 @@ function App() {
   }
 
   function createSegment(region: Region) {
-    if (!currentPage) { flash('请先导入 PDF 乐谱'); return }
+    if (!currentPage) { flash('请先导入乐谱'); return }
     const id = `segment-${Date.now()}`
     const next: Segment = { id, pageId: currentPage.id, region: fitRegion(region), startTime: time, endTime: Math.min(duration || time + 4, time + 4), direction: 'left-to-right' }
     setProject(p => ({ ...p, segments: [...p.segments, next] })); selectOne(id); setTool('row')
@@ -530,7 +535,7 @@ function App() {
     flash(`已应用 ${chosen.length} 个候选框；新标注时间可用打点校准`)
   }
   const startAutoAlign = async () => {
-    if (!project.projectId || !project.pages.length || !project.source.audioUrl) { flash('请先导入 PDF 乐谱和 MP3 音频'); return }
+    if (!project.projectId || !project.pages.length || !project.source.audioUrl) { flash('请先导入乐谱和音频'); return }
     if (autoBusy) return
     setAutoBusy(true); setAutoStage('正在准备自动对齐')
     setAnalysisProgress({ kind: 'align', percent: 0, stage: '正在准备自动对齐' })
@@ -587,7 +592,7 @@ function App() {
     flash(`已填入 ${actionable.length} 条乐句的时间；原有打点已保留`)
   }
   const openExport = async () => {
-    if (!project.projectId) { flash('请先选择乐谱 PDF'); return }
+    if (!project.projectId) { flash('请先选择乐谱'); return }
     const settings = project.export || initialProject.export!
     setExportSettings(settings); setPreviewTime(time); setExportJob(null); setValidation(null); setExportOpen(true)
     try {
@@ -693,7 +698,7 @@ function App() {
     </header>
     <div className="main-layout">
       <main className="workspace">
-        <div className="workspace-toolbar"><div className="toolbar-files"><button className="file-chip" title={project.source.pdf ? `点击重新选择 PDF：${project.source.pdf}` : '选择 PDF 乐谱'} onClick={() => pdfInput.current?.click()}><FileImage size={14}/><span>PDF</span><strong>{fileName(project.source.pdf) || '选择乐谱'}</strong></button><button className="file-chip" title={project.source.audio ? `点击重新选择 MP3：${project.source.audio}` : '选择 MP3 音频'} onClick={() => audioInput.current?.click()}><FileAudio2 size={14}/><span>MP3</span><strong>{fileName(project.source.audio) || '选择音频'}</strong></button></div><div className="toolbar-right"><div className="page-count">{project.pages.length ? <><span>第</span><strong>{activePage + 1}</strong><span>/ {project.pages.length} 页</span><button className="page-arrow" disabled={activePage === 0} onClick={() => setActivePage(activePage - 1)}><ChevronLeft size={15}/></button><button className="page-arrow" disabled={activePage >= project.pages.length - 1} onClick={() => setActivePage(activePage + 1)}><ChevronRight size={15}/></button></> : <span>等待导入乐谱</span>}</div><span className="toolbar-sep"/><div className="zoom-control"><button title="缩小乐谱" onClick={() => changeZoom(-.1)}><ZoomOut size={15}/></button><button className="zoom-value" title="点击恢复自动适配" onClick={() => setZoom(null)}>{zoom === null ? '自动适配' : `${Math.round(zoom * 100)}%`}</button><button title="放大乐谱" onClick={() => changeZoom(.1)}><ZoomIn size={15}/></button></div></div></div>
+        <div className="workspace-toolbar"><div className="toolbar-files"><button className="file-chip" title={project.source.pdf ? `点击重新选择乐谱：${project.source.pdf}` : '选择 PDF 或 JPG、PNG、WebP 乐谱'} onClick={() => scoreInput.current?.click()}><FileImage size={14}/><span>歌谱</span><strong>{fileName(project.source.pdf) || '选择乐谱'}</strong></button><button className="file-chip" title={project.source.audio ? `点击重新选择 MP3：${project.source.audio}` : '选择 MP3 音频'} onClick={() => audioInput.current?.click()}><FileAudio2 size={14}/><span>MP3</span><strong>{fileName(project.source.audio) || '选择音频'}</strong></button></div><div className="toolbar-right"><div className="page-count">{project.pages.length ? <><span>第</span><strong>{activePage + 1}</strong><span>/ {project.pages.length} 页</span><button className="page-arrow" disabled={activePage === 0} onClick={() => setActivePage(activePage - 1)}><ChevronLeft size={15}/></button><button className="page-arrow" disabled={activePage >= project.pages.length - 1} onClick={() => setActivePage(activePage + 1)}><ChevronRight size={15}/></button></> : <span>等待导入乐谱</span>}</div><span className="toolbar-sep"/><div className="zoom-control"><button title="缩小乐谱" onClick={() => changeZoom(-.1)}><ZoomOut size={15}/></button><button className="zoom-value" title="点击恢复自动适配" onClick={() => setZoom(null)}>{zoom === null ? '自动适配' : `${Math.round(zoom * 100)}%`}</button><button title="放大乐谱" onClick={() => changeZoom(.1)}><ZoomIn size={15}/></button></div></div></div>
         <div className="segmentation-toolbar"><span>切分乐谱</span><button className={`button compact ${tool === 'row' ? 'button-active' : 'button-quiet'}`} title="添加标注（N）" onClick={() => setTool(tool === 'row' ? 'select' : 'row')}><span className="horizontal-line-icon"/>添加标注</button><button className={`button compact ${tool === 'cut' ? 'button-active' : 'button-quiet'}`} onClick={() => setTool(tool === 'cut' ? 'select' : 'cut')}><span className="vertical-line-icon"/>竖切成框</button><button className="button button-quiet compact" disabled={boxBusy || !project.pages.length} onClick={() => void startAutoBoxes()}>{boxBusy ? <LoaderCircle className="spin" size={13}/> : <WandSparkles size={13}/>} {boxBusy ? '正在框选' : '自动框选'}</button><button className="button button-quiet compact" disabled={!selected || !project.segments.some(segment => segment.id === selected)} onClick={duplicateBelow} title={selectedIds.length > 1 ? `复制已选的 ${selectedIds.length} 个标注到下一行` : "复制选中标注到下一行"}><Scissors size={13}/>复制到下一行{selectedIds.length > 1 ? ` (${selectedIds.length})` : ""}</button><button className={`button compact ${tool === 'select' ? 'button-active' : 'button-quiet'}`} onClick={() => setTool('select')}>框选乐句</button><button className="button button-quiet compact" disabled={selectedIds.length < 2} onClick={mergeSelected}>合并乐句{selectedIds.length > 1 ? ` (${selectedIds.length})` : ''}</button><button className="button button-active compact auto-align-launch" disabled={autoBusy || !project.pages.length || !project.source.audioUrl} onClick={() => void startAutoAlign()}>{autoBusy ? <LoaderCircle className="spin" size={13}/> : <WandSparkles size={13}/>} {autoBusy ? '正在对齐' : '自动对齐'}</button><button className="button button-quiet compact reset-toolbar" disabled={!project.segments.length && !(project.flags || []).length} onClick={() => setResetOpen(true)}><RotateCcw size={13}/>重新标注</button><small>{autoBusy ? autoStage : boxBusy ? '正在查找歌词行和明显留白' : tool === 'row' ? '从一个角拖到对角，自由决定框的宽和高' : tool === 'cut' ? '点击已有标注框，将它分成左右两个独立框' : '在空白处拖框多选；Shift 点击可追加选择'}</small></div>
         <div className="canvas-area" ref={canvasRef}>
           {currentPage ? <div className="page-frame" key={currentPage.id} style={{ width: zoom === null ? '58%' : `${Math.round(510 * zoom)}px`, maxWidth: 'calc(100% - 12px)' }}><div ref={pageRef} className={`score-page ${tool === 'row' ? 'drawing' : ''} ${tool === 'cut' ? 'anchoring' : ''} ${tool === 'select' ? 'marquee-mode' : ''} ${playing ? 'previewing' : ''}`} style={{ aspectRatio: `${currentPage.width} / ${currentPage.height}` }} onPointerDown={pagePointerDown} onPointerMove={pagePointerMove} onPointerUp={pagePointerUp} onPointerCancel={pagePointerUp}>
@@ -727,7 +732,7 @@ function App() {
                 {draft && <rect className="draft-region" x={draft.x * 1000} y={draft.y * 1414} width={draft.width * 1000} height={draft.height * 1414} rx="4"/>}
                 {marquee && <rect className="marquee-region" x={marquee.x * 1000} y={marquee.y * 1414} width={marquee.width * 1000} height={marquee.height * 1414}/>}
               </svg>
-            </div><div className="page-caption"><span>第 {activePage + 1} 页</span><span>{currentPage.width} × {currentPage.height} px · 原始比例标注</span></div></div> : <div className="empty-workspace"><div className="empty-art"><div className="music-note note-a">♪</div><div className="music-note note-b">♫</div><div className="empty-paper"><div className="paper-lines">𝅘𝅥𝅮　1 2 3 5　|　6 — 5 3<br/>　小 星 星　　亮 晶 晶</div><div className="paper-highlight"/></div><div className="upload-orbit"><ImagePlus size={20}/></div></div><div className="empty-copy"><span className="eyebrow">从乐谱开始</span><h1>让每一句歌，都有自己的节奏</h1><p>导入一份简谱 PDF 和伴奏 MP3，逐行标注歌词位置，<br/>再为每段旋律校准准确的播放时间。</p></div><p className="empty-start-note">在上方工具栏选择 PDF 和 MP3 即可开始</p><div className="supported-note"><span className="check-mini"><Check size={11}/></span>页面按原始尺寸渲染，标注坐标随缩放保持准确</div></div>}
+            </div><div className="page-caption"><span>第 {activePage + 1} 页</span><span>{currentPage.width} × {currentPage.height} px · 原始比例标注</span></div></div> : <div className="empty-workspace"><div className="empty-art"><div className="music-note note-a">♪</div><div className="music-note note-b">♫</div><div className="empty-paper"><div className="paper-lines">𝅘𝅥𝅮　1 2 3 5　|　6 — 5 3<br/>　小 星 星　　亮 晶 晶</div><div className="paper-highlight"/></div><div className="upload-orbit"><ImagePlus size={20}/></div></div><div className="empty-copy"><span className="eyebrow">从乐谱开始</span><h1>让每一句歌，都有自己的节奏</h1><p>导入 PDF 或 JPG、PNG、WebP 乐谱，再选择音频，<br/>逐行标注歌词位置并校准播放时间。</p></div><p className="empty-start-note">在上方工具栏选择歌谱和音频即可开始</p><div className="supported-note"><span className="check-mini"><Check size={11}/></span>页面按原始尺寸渲染，标注坐标随缩放保持准确</div></div>}
         </div>
       </main>
       <aside className="right-panel"><div className="right-panel-title"><div><span className="eyebrow">检查器</span><h2>标注属性</h2></div><button className="icon-button"><MoreHorizontal size={17}/></button></div>{selected && project.segments.some(s => s.id === selected) ? (() => { const seg = project.segments.find(s => s.id === selected)!; const index = project.segments.indexOf(seg); const neighbors = [index > 0 ? project.segments[index - 1] : null, project.segments[index + 1] || null].filter((item): item is Segment => Boolean(item)); const targetId = neighbors.some(item => item.id === mergeTarget) ? mergeTarget! : neighbors[0]?.id || ""; return <><div className="inspector-card"><div className="inspector-segment-title"><div className="segment-color-dot"/><div><strong>乐句 {String(project.segments.indexOf(seg) + 1).padStart(2, '0')}</strong><span>页面 {project.pages.findIndex(p => p.id === seg.pageId) + 1} · 左至右</span></div><button className="icon-button tiny" onClick={() => deleteSegment(seg.id)}><X size={15}/></button></div><div className="inspector-order"><label className="field-label" htmlFor="phrase-order">乐句序号</label><div><input id="phrase-order" type="text" inputMode="numeric" value={orderDraft ?? String(index + 1)} onChange={e => setOrderDraft(e.target.value)} onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); moveSegmentTo(seg.id, e.currentTarget.value) } else if (e.key === "Escape") setOrderDraft(null) }}/><button className="button button-secondary" disabled={orderDraft === null || orderDraft === String(index + 1)} onClick={() => moveSegmentTo(seg.id, orderDraft || "")}>移动到此</button></div></div><label className="field-label">开始时间</label><div className="time-input"><Clock3 size={14}/><input value={formatTime(seg.startTime)} onChange={e => { const v = e.target.value.split(':').reduce((a, b) => a * 60 + Number(b), 0); if (Number.isFinite(v)) updateSegment(seg.id, { startTime: v }) }}/><button onClick={() => updateSegment(seg.id, { startTime: time })}>设为当前</button></div><label className="field-label">结束时间</label><div className="time-input"><Clock3 size={14}/><input value={formatTime(seg.endTime)} onChange={e => { const v = e.target.value.split(':').reduce((a, b) => a * 60 + Number(b), 0); if (Number.isFinite(v)) updateSegment(seg.id, { endTime: v }) }}/><button onClick={() => updateSegment(seg.id, { endTime: time })}>设为当前</button></div><div className="field-divider"/><div className="highlight-setting"><div><strong>高亮样式</strong><span>橘红色文字 · 无底色</span></div><div className="yellow-swatch"/></div>{segmentRegions(seg).length > 1 && <div className="inspector-merge"><label className="field-label">框顺序 · {segmentRegions(seg).length} 个框</label><button className="button button-secondary" onClick={() => reverseSegmentRegions(seg.id)}>反转框顺序</button></div>}<div className="inspector-merge"><label className="field-label" htmlFor="merge-target">与哪句合并</label><select id="merge-target" value={targetId} disabled={!neighbors.length} onChange={e => setMergeTarget(e.target.value)}>{neighbors.map(item => { const itemIndex = project.segments.indexOf(item); return <option key={item.id} value={item.id}>乐句 {String(itemIndex + 1).padStart(2, "0")}（{itemIndex < index ? "上一句" : "下一句"}）</option> })}</select><button className="button button-secondary" disabled={!targetId} onClick={() => mergeSegments([seg.id, targetId])}>合并这两句</button></div><div className="inspector-actions"><button className="button button-secondary repeat-region-button" onClick={repeatSelectedRegions}>重复使用选中框{selectedIds.length > 1 ? `（${selectedIds.length}）` : ""}</button><button className="button button-danger-quiet" onClick={() => deleteSegment(seg.id)}>删除标注</button></div></div></> })() : <div className="inspector-empty"><div className="inspector-empty-icon"><WandSparkles size={19}/></div><strong>选择一条标注</strong><p>选中乐谱上的标注区域，<br/>即可调整时间与位置。</p><div className="inspector-hint"><Sparkles size={14}/><span>拖动框内可移动，拖动边线或四角可调整大小</span></div></div>}
@@ -739,7 +744,7 @@ function App() {
     {analysisProgress && <ProgressDialog key={analysisProgress.kind} kind={analysisProgress.kind} percent={analysisProgress.percent} stage={analysisProgress.stage}/>}
     {autoCandidates && <AutoAlignDialog candidates={autoCandidates} existingCount={project.segments.length} playing={playing} onClose={() => setAutoCandidates(null)} onListen={at => { seek(at); const audio = audioRef.current; if (audio) { void audio.play(); setPlaying(true) } }} onPause={() => { audioRef.current?.pause(); setPlaying(false) }} onApply={applyAutoCandidates}/>}
     {boxCandidates && <AutoBoxDialog pages={project.pages} candidates={boxCandidates} existingCount={project.segments.length} onClose={() => setBoxCandidates(null)} onApply={applyAutoBoxes}/>}
-    <input ref={pdfInput} type="file" accept="application/pdf,.pdf" hidden onChange={e => { void onPdf(e.target.files?.[0]); e.currentTarget.value = '' }}/><input ref={audioInput} type="file" accept="audio/mpeg,audio/mp3,.mp3,audio/*" hidden onChange={e => { void onAudio(e.target.files?.[0]); e.currentTarget.value = '' }}/><audio ref={audioRef} onLoadedMetadata={e => { const next = e.currentTarget.duration; setDuration(next); setProject(p => ({ ...p, audioDuration: next })) }} onTimeUpdate={e => setTime(e.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)}/>{message && <div className="toast"><Check size={15}/>{message}</div>}
+    <input ref={scoreInput} type="file" accept="application/pdf,.pdf,image/jpeg,.jpg,.jpeg,image/png,.png,image/webp,.webp" multiple hidden onChange={e => { void onScore(e.target.files); e.currentTarget.value = '' }}/><input ref={audioInput} type="file" accept="audio/mpeg,audio/mp3,.mp3,audio/*" hidden onChange={e => { void onAudio(e.target.files?.[0]); e.currentTarget.value = '' }}/><audio ref={audioRef} onLoadedMetadata={e => { const next = e.currentTarget.duration; setDuration(next); setProject(p => ({ ...p, audioDuration: next })) }} onTimeUpdate={e => setTime(e.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)}/>{message && <div className="toast"><Check size={15}/>{message}</div>}
     {exportOpen && <ExportDialog settings={exportSettings} previewUrl={previewUrl} previewTime={previewTime} duration={duration || project.audioDuration || 0} validation={validation} job={exportJob} busy={exportBusy} onSettings={settings => setExportSettings(settings)} onPreviewTime={setPreviewTime} onExport={() => { void startVideoExport() }} onClose={() => setExportOpen(false)}/>}
   </div>
 }
