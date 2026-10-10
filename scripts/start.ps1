@@ -2,22 +2,7 @@
 $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 Set-Location -LiteralPath $root
 $runtime = Join-Path $root '.launcher'
-$backendUrl = 'http://127.0.0.1:8000'
 $frontendUrl = 'http://127.0.0.1:5173/'
-
-function Test-Backend {
-    try {
-        $doc = Invoke-RestMethod -Uri "$backendUrl/openapi.json" -TimeoutSec 2
-        return $doc.info.title -eq '谱间本地项目服务'
-    } catch { return $false }
-}
-
-function Test-Frontend {
-    try {
-        $page = Invoke-WebRequest -Uri $frontendUrl -TimeoutSec 2 -UseBasicParsing
-        return $page.Content -like '*谱间 · 歌谱同步工作台*'
-    } catch { return $false }
-}
 
 function Test-Port([int]$port) {
     $client = [System.Net.Sockets.TcpClient]::new()
@@ -28,9 +13,10 @@ function Test-Port([int]$port) {
     finally { $client.Dispose() }
 }
 
-function Wait-Ready([scriptblock]$check, [string]$label, [string]$logFile) {
-    for ($attempt = 0; $attempt -lt 60; $attempt++) {
-        if (& $check) { return }
+function Wait-Ready([int]$port, [System.Diagnostics.Process]$process, [string]$label, [string]$logFile) {
+    for ($attempt = 0; $attempt -lt 120; $attempt++) {
+        if ($process.HasExited) { throw "$label 已退出。请查看 $logFile" }
+        if (Test-Port $port) { return }
         Start-Sleep -Milliseconds 500
     }
     throw "$label 启动超时。请查看 $logFile"
@@ -127,13 +113,13 @@ try {
     $backendLog = Join-Path $runtime 'backend-error.log'
     $backend = Start-Process -FilePath $venvPython -ArgumentList @('-m', 'uvicorn', 'backend.main:app', '--host', '127.0.0.1', '--port', '8000') -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput (Join-Path $runtime 'backend-output.log') -RedirectStandardError $backendLog -PassThru
     $job.Add($backend)
-    Wait-Ready ${function:Test-Backend} '后端' $backendLog
+    Wait-Ready 8000 $backend '后端' $backendLog
 
     Write-Host '正在启动网页界面…'
     $frontendLog = Join-Path $runtime 'frontend-error.log'
     $frontend = Start-Process -FilePath $node.Source -ArgumentList @("`"$viteScript`"", '--host', '127.0.0.1', '--port', '5173', '--strictPort') -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput (Join-Path $runtime 'frontend-output.log') -RedirectStandardError $frontendLog -PassThru
     $job.Add($frontend)
-    Wait-Ready ${function:Test-Frontend} '网页界面' $frontendLog
+    Wait-Ready 5173 $frontend '网页界面' $frontendLog
 
     Write-Host '谱间已就绪，正在打开浏览器。'
     Start-Process $frontendUrl
