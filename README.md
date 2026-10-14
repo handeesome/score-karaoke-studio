@@ -101,6 +101,8 @@ Windows 桌面窗口还需要 .NET Framework 4.8 与 [Microsoft Edge WebView2 Ru
 
 程序自检会检查网页和静态资源、本机服务、FFmpeg、Demucs 工作进程；离线版还会实际加载 Whisper、Demucs 并检查 OCR 语言包。自检不会下载缺少的离线模型。通过后才生成最终 ZIP；失败的构建目录保留日志，已有同版本 ZIP 不会被覆盖。
 
+若下载解压后出现 `Failed to resolve Python.Runtime.Loader.Initialize`，Windows 可能仍在锁定 DLL 的互联网来源标记；点击“仍要运行”并不一定会解除 DLL 锁定。先在原始 ZIP 的“属性”中勾选“解除锁定”，再解压到新的文件夹；或从 Release 下载 `修复启动.cmd`，放到已解压的 `Pujian.exe` 同目录，双击解除该软件文件夹内文件的下载锁定后重试。构建脚本会将此修复入口放进后续 ZIP；成品自检也会实际初始化 Python.NET 连接组件。若仍失败，请提供数据目录中的 `desktop.log`。
+
 桌面版数据保存在 `%LOCALAPPDATA%\Pujian`，包括当前编辑记录、歌谱/音频、模型缓存和导出视频；更换软件目录或更新版本不会清空这些文件。桌面版与浏览器版保存的编辑状态相互独立，旧项目不自动迁移。关闭桌面窗口会结束后台及它启动的模型/编码进程；同时只运行一个桌面实例。
 
 软件优先使用 `models/whisper-base` 与 `models/demucs` 下的附带模型，也会检查已缓存的 Whisper base；不扫描整个硬盘。已有其他目录中的兼容模型时，可设置 `PUJIAN_WHISPER_MODEL`、`PUJIAN_DEMUCS_REPO` 环境变量。离线版缺失模型会明确报错，普通版缺失模型时首次使用会下载。

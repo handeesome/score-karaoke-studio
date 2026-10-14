@@ -107,6 +107,7 @@ def stop_backend(process, job, log):
 def smoke_test(data):
     """Validate the actual bundle without opening a window."""
     import webview  # noqa: F401
+    import clr  # noqa: F401  -- exercise the same Python.NET bridge as the desktop window
     from imageio_ffmpeg import get_ffmpeg_exe
     from backend.auto_alignment import _tesseract
     from backend.runtime import offline, local_demucs, whisper_source, whisper_cache

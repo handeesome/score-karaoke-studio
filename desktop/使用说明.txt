@@ -13,6 +13,10 @@
 6. 桌面版与原来的浏览器版分别保存编辑状态；旧项目不会自动迁移。
 7. 同一时间只打开一个谱间桌面窗口。软件只监听本机 127.0.0.1:18765。
 8. 启动失败时查看数据目录里的 desktop.log 和 backend.log。
+9. 若出现 Failed to resolve Python.Runtime.Loader.Initialize，可能是 Windows 锁定了下载的 DLL。
+   在解压后的软件文件夹里双击“修复启动.cmd”，完成后再打开 Pujian.exe。
+   “仍要运行”只放行 EXE，不一定解除 DLL 的下载锁定。
+   也可以在解压之前右键原始 ZIP → 属性 → 勾选“解除锁定”→ 应用，再解压到新文件夹。
 
 本机模型（可选，适合已经下载过模型的用户）：
 设置环境变量 PUJIAN_WHISPER_MODEL 指向含 model.bin、config.json、tokenizer.json 的 faster-whisper 模型目录。

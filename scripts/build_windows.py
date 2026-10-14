@@ -127,6 +127,7 @@ def build(args):
     copy_numpy_compat(bundle)
     shutil.copy2(ROOT / "LICENSE", bundle / "LICENSE")
     shutil.copy2(ROOT / "desktop" / "使用说明.txt", bundle / "使用说明.txt")
+    shutil.copy2(ROOT / "desktop" / "修复启动.cmd", bundle / "修复启动.cmd")
     notices(bundle / "third-party-notices")
     if args.include_models:
         (bundle / "tools").mkdir(exist_ok=True)
