@@ -13,7 +13,6 @@ from typing import Literal
 import fitz
 from PIL import Image, ImageOps
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from mutagen import File as AudioFile
@@ -54,7 +53,6 @@ vocal_jobs_by_audio: dict[str, str] = {}
 vocal_lock = Lock()
 
 app = FastAPI(title="谱间本地项目服务", version="0.1.0")
-app.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"], allow_methods=["*"], allow_headers=["*"])
 app.mount("/media", StaticFiles(directory=MEDIA), name="media")
 
 
