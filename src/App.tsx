@@ -7,6 +7,7 @@ import TimelinePanel from './components/TimelinePanel'
 import AutoBoxDialog from './components/AutoBoxDialog'
 import ProgressDialog from './components/ProgressDialog'
 import { initialProject } from './types'
+import { copyRegionToNextLine, loadInkPage } from './scoreInk'
 import { bindTimingToScoreOrder, calculateCameraTarget, calculateKaraokeProgress, fitRegion, formatTime, migrateLegacyCuts, recoverFlagsFromTiming, regionPositionKey, regionReveal, segmentRegions, sharedRegionKey } from './utils'
 
 const API = ''
@@ -41,6 +42,7 @@ function App() {
   const [autoCandidates, setAutoCandidates] = useState<AutoCandidate[] | null>(null)
   const [boxCandidates, setBoxCandidates] = useState<AutoBoxCandidate[] | null>(null)
   const [boxBusy, setBoxBusy] = useState(false)
+  const [duplicateBusy, setDuplicateBusy] = useState(false)
   const [analysisProgress, setAnalysisProgress] = useState<{ kind: 'boxes' | 'align'; percent: number; stage: string } | null>(null)
   const [tool, setTool] = useState<'select' | 'row' | 'cut'>('select')
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
@@ -351,7 +353,7 @@ function App() {
       if (event.key === 'ArrowLeft') { event.preventDefault(); seek(time - (event.shiftKey ? 1 : .1)) }
       if (event.key === 'ArrowRight') { event.preventDefault(); seek(time + (event.shiftKey ? 1 : .1)) }
       if (event.key.toLowerCase() === 'n') setTool('row')
-      if (event.key.toLowerCase() === 'd' && selected) { event.preventDefault(); duplicateBelow() }
+      if (event.key.toLowerCase() === 'd' && selected) { event.preventDefault(); void duplicateBelow() }
       if ((event.key === 'Delete' || event.key === 'Backspace') && selected && !event.ctrlKey && !event.altKey && !event.metaKey && !event.repeat) {
         event.preventDefault()
         deleteSegment(selected)
@@ -425,21 +427,39 @@ function App() {
     setSelectedIds(ids); setSelected(ids[ids.length - 1]); setTool('select')
     flash(`已在结尾重复使用 ${copies.length} 个歌词框；新乐句待打点`)
   }
-  const duplicateBelow = () => {
+  const duplicateBelow = async () => {
+    if (duplicateBusy) return
     const sources = project.segments.filter(segment => selectedIds.includes(segment.id))
     if (!sources.length) { flash('先选中要复制的标注'); return }
-    const copyRegions = sources.map(source => segmentRegions(source).map(part => ({
-      pageId: part.pageId,
-      region: { ...part.region, y: part.region.y + part.region.height + Math.min(.006, part.region.height / 4) },
-    })))
-    const noSpace = copyRegions.findIndex(regions => regions.some(part => part.region.y + part.region.height > 1))
-    if (noSpace >= 0) {
-      const number = project.segments.indexOf(sources[noSpace]) + 1
-      flash(`乐句 ${String(number).padStart(2, '0')} 下方放不下副本；可改用「重复使用选中框」`)
+    setDuplicateBusy(true)
+    const pageImages = new Map<string, ReturnType<typeof loadInkPage>>()
+    const copyRegions: { pageId: string; region: Region }[][] = []
+    try {
+      for (const source of sources) {
+        const regions: { pageId: string; region: Region }[] = []
+        for (const part of segmentRegions(source)) {
+          const page = project.pages.find(item => item.id === part.pageId)
+          if (!page) throw new Error('找不到标注对应的乐谱页')
+          if (!pageImages.has(page.id)) pageImages.set(page.id, loadInkPage(page))
+          const inkPage = await pageImages.get(page.id)!
+          const region = copyRegionToNextLine(inkPage, part.region)
+          if (!region) {
+            const number = project.segments.indexOf(source) + 1
+            flash(`乐句 ${String(number).padStart(2, '0')} 下方没有识别到下一行文字`)
+            return
+          }
+          regions.push({ pageId: part.pageId, region })
+        }
+        copyRegions.push(regions)
+      }
+    } catch {
+      flash('读取乐谱图片失败，请确认图片仍可打开')
       return
+    } finally {
+      setDuplicateBusy(false)
     }
     const copies = sources.map((source, index): Segment => {
-      const regions = copyRegions[index].map(part => ({ pageId: part.pageId, region: fitRegion(part.region) }))
+      const regions = copyRegions[index]
       const single = sources.length === 1
       return { ...source, id: `segment-${Date.now()}-${index}`, pageId: regions[0].pageId,
         region: regions[0].region, regions: regions.length > 1 ? regions : undefined,
@@ -711,7 +731,7 @@ function App() {
     <div className="main-layout">
       <main className="workspace">
         <div className="workspace-toolbar"><div className="toolbar-files"><button className="file-chip" title={project.source.pdf ? `点击重新选择乐谱：${project.source.pdf}` : '选择 PDF 或 JPG、PNG、WebP 乐谱'} onClick={() => scoreInput.current?.click()}><FileImage size={14}/><span>歌谱</span><strong>{fileName(project.source.pdf) || '选择乐谱'}</strong></button><button className="file-chip" title={project.source.audio ? `点击重新选择 MP3：${project.source.audio}` : '选择 MP3 音频'} onClick={() => audioInput.current?.click()}><FileAudio2 size={14}/><span>MP3</span><strong>{fileName(project.source.audio) || '选择音频'}</strong></button></div><div className="toolbar-right"><div className="page-count">{project.pages.length ? <><span>第</span><strong>{activePage + 1}</strong><span>/ {project.pages.length} 页</span><button className="page-arrow" disabled={activePage === 0} onClick={() => setActivePage(activePage - 1)}><ChevronLeft size={15}/></button><button className="page-arrow" disabled={activePage >= project.pages.length - 1} onClick={() => setActivePage(activePage + 1)}><ChevronRight size={15}/></button></> : <span>等待导入乐谱</span>}</div><span className="toolbar-sep"/><div className="zoom-control"><button title="缩小乐谱" onClick={() => changeZoom(-.1)}><ZoomOut size={15}/></button><button className="zoom-value" title="点击恢复自动适配" onClick={() => setZoom(null)}>{zoom === null ? '自动适配' : `${Math.round(zoom * 100)}%`}</button><button title="放大乐谱" onClick={() => changeZoom(.1)}><ZoomIn size={15}/></button></div></div></div>
-        <div className="segmentation-toolbar"><span>切分乐谱</span><button className={`button compact ${tool === 'row' ? 'button-active' : 'button-quiet'}`} title="添加标注（N）" onClick={() => setTool(tool === 'row' ? 'select' : 'row')}><span className="horizontal-line-icon"/>添加标注</button><button className={`button compact ${tool === 'cut' ? 'button-active' : 'button-quiet'}`} onClick={() => setTool(tool === 'cut' ? 'select' : 'cut')}><span className="vertical-line-icon"/>竖切成框</button><button className="button button-quiet compact" disabled={boxBusy || !project.pages.length} onClick={() => void startAutoBoxes()}>{boxBusy ? <LoaderCircle className="spin" size={13}/> : <WandSparkles size={13}/>} {boxBusy ? '正在框选' : '自动框选'}</button><button className="button button-quiet compact" disabled={!selected || !project.segments.some(segment => segment.id === selected)} onClick={duplicateBelow} title={selectedIds.length > 1 ? `复制已选的 ${selectedIds.length} 个标注到下一行` : "复制选中标注到下一行"}><Scissors size={13}/>复制到下一行{selectedIds.length > 1 ? ` (${selectedIds.length})` : ""}</button><button className={`button compact ${tool === 'select' ? 'button-active' : 'button-quiet'}`} onClick={() => setTool('select')}>框选乐句</button><button className="button button-quiet compact" disabled={selectedIds.length < 2} onClick={mergeSelected}>合并乐句{selectedIds.length > 1 ? ` (${selectedIds.length})` : ''}</button><button className="button button-active compact auto-align-launch" disabled={autoBusy || !project.pages.length || !project.source.audioUrl} onClick={() => void startAutoAlign()}>{autoBusy ? <LoaderCircle className="spin" size={13}/> : <WandSparkles size={13}/>} {autoBusy ? '正在对齐' : '自动对齐'}</button><button className="button button-quiet compact reset-toolbar" disabled={!project.segments.length && !(project.flags || []).length} onClick={() => setResetOpen(true)}><RotateCcw size={13}/>重新标注</button><small>{autoBusy ? autoStage : boxBusy ? '正在查找歌词行和明显留白' : tool === 'row' ? '从一个角拖到对角，自由决定框的宽和高' : tool === 'cut' ? '点击已有标注框，将它分成左右两个独立框' : '在空白处拖框多选；Shift 点击可追加选择'}</small></div>
+        <div className="segmentation-toolbar"><span>切分乐谱</span><button className={`button compact ${tool === 'row' ? 'button-active' : 'button-quiet'}`} title="添加标注（N）" onClick={() => setTool(tool === 'row' ? 'select' : 'row')}><span className="horizontal-line-icon"/>添加标注</button><button className={`button compact ${tool === 'cut' ? 'button-active' : 'button-quiet'}`} onClick={() => setTool(tool === 'cut' ? 'select' : 'cut')}><span className="vertical-line-icon"/>竖切成框</button><button className="button button-quiet compact" disabled={boxBusy || !project.pages.length} onClick={() => void startAutoBoxes()}>{boxBusy ? <LoaderCircle className="spin" size={13}/> : <WandSparkles size={13}/>} {boxBusy ? '正在框选' : '自动框选'}</button><button className="button button-quiet compact" disabled={duplicateBusy || !selected || !project.segments.some(segment => segment.id === selected)} onClick={() => void duplicateBelow()} title={selectedIds.length > 1 ? `复制已选的 ${selectedIds.length} 个标注到下一行` : "复制选中标注到下一行"}><Scissors size={13}/>{duplicateBusy ? '正在复制' : '复制到下一行'}{selectedIds.length > 1 ? ` (${selectedIds.length})` : ""}</button><button className={`button compact ${tool === 'select' ? 'button-active' : 'button-quiet'}`} onClick={() => setTool('select')}>框选乐句</button><button className="button button-quiet compact" disabled={selectedIds.length < 2} onClick={mergeSelected}>合并乐句{selectedIds.length > 1 ? ` (${selectedIds.length})` : ''}</button><button className="button button-active compact auto-align-launch" disabled={autoBusy || !project.pages.length || !project.source.audioUrl} onClick={() => void startAutoAlign()}>{autoBusy ? <LoaderCircle className="spin" size={13}/> : <WandSparkles size={13}/>} {autoBusy ? '正在对齐' : '自动对齐'}</button><button className="button button-quiet compact reset-toolbar" disabled={!project.segments.length && !(project.flags || []).length} onClick={() => setResetOpen(true)}><RotateCcw size={13}/>重新标注</button><small>{autoBusy ? autoStage : boxBusy ? '正在查找歌词行和明显留白' : tool === 'row' ? '从一个角拖到对角，自由决定框的宽和高' : tool === 'cut' ? '点击已有标注框，将它分成左右两个独立框' : '在空白处拖框多选；Shift 点击可追加选择'}</small></div>
         <div className="canvas-area" ref={canvasRef}>
           {currentPage ? <div className="page-frame" key={currentPage.id} style={{ width: zoom === null ? '58%' : `${Math.round(510 * zoom)}px`, maxWidth: 'calc(100% - 12px)' }}><div ref={pageRef} className={`score-page ${tool === 'row' ? 'drawing' : ''} ${tool === 'cut' ? 'anchoring' : ''} ${tool === 'select' ? 'marquee-mode' : ''} ${playing ? 'previewing' : ''}`} style={{ aspectRatio: `${currentPage.width} / ${currentPage.height}` }} onPointerDown={pagePointerDown} onPointerMove={pagePointerMove} onPointerUp={pagePointerUp} onPointerCancel={pagePointerUp}>
               <img src={currentPage.image.startsWith('data:') || currentPage.image.startsWith('blob:') ? currentPage.image : currentPage.image} alt={`乐谱第 ${activePage + 1} 页`} draggable={false}/>
