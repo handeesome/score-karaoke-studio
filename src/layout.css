@@ -1,4 +1,11 @@
 .page-frame{flex:none;height:auto;max-height:none;align-items:flex-start}
+.topbar-left{display:flex;align-items:center;gap:18px;min-width:0}
+.topbar-left .brand{flex:none}
+.highlight-mode-control{height:30px;display:flex;align-items:center;gap:3px;padding:3px;border:1px solid #e4e8e1;border-radius:7px;background:#f7f9f6;white-space:nowrap}
+.highlight-mode-control>span{padding:0 7px;color:#7b8278;font-size:10px;font-weight:600}
+.highlight-mode-control button{height:23px;border:0;border-radius:5px;padding:0 9px;background:transparent;color:#6b7369;font-size:10px;font-weight:600}
+.highlight-mode-control button[aria-pressed="true"]{background:#fff;color:#3c6748;box-shadow:0 1px 4px #243b291c}
+.highlight-mode-control button:hover:not([aria-pressed="true"]){background:#edf2ec}
 .score-page{width:100%;height:auto;max-height:none;aspect-ratio:auto}
 .canvas-area{align-items:flex-start;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
 html,body,#root{height:100%;min-height:0}
@@ -172,6 +179,11 @@ body{min-width:0;height:100dvh;overflow:hidden}
   .main-layout{grid-template-columns:minmax(0,1fr) 210px}
   .topbar{padding-left:12px;padding-right:12px}
   .timeline-tools .button.compact{padding:0 7px}
+}
+@media(max-width:650px){
+  .topbar-left{gap:8px}
+  .brand-divider,.product-label{display:none}
+  .highlight-mode-control>span{display:none}
 }
 @media(max-width:820px){
   .main-layout{grid-template-columns:minmax(0,1fr)}

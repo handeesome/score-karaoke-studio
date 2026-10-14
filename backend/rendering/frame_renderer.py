@@ -55,8 +55,10 @@ def _parts(segment: dict) -> list[dict]:
     return segment.get("regions") or [{"pageId": segment["pageId"], "region": segment["region"]}]
 
 
-def _part_progress(segment: dict, at: float) -> tuple[list[dict], list[float], int]:
+def _part_progress(segment: dict, at: float, mode: str = "wipe") -> tuple[list[dict], list[float], int]:
     parts = _parts(segment)
+    if mode == "full":
+        return parts, [1.0] * len(parts), 0
     widths = [max(0.001, float(part["region"]["width"])) for part in parts]
     progress = calculate_progress(float(segment["startTime"]), float(segment["endTime"]), [], at)
     remaining = progress * sum(widths)
@@ -68,12 +70,14 @@ def _part_progress(segment: dict, at: float) -> tuple[list[dict], list[float], i
     return parts, reveals, active
 
 
-def _scroll_events(segments: list[dict], page_cache: dict, height: int, safe_zone: float):
+def _scroll_events(segments: list[dict], page_cache: dict, height: int, safe_zone: float, mode: str = "wipe"):
     events: list[dict] = []
     camera_by_page: dict[str, float] = {}
     last_page: str | None = None
     for segment in sorted(segments, key=lambda item: (float(item.get("startTime", 0)), item["id"])):
         parts = _parts(segment)
+        if mode == "full":
+            parts = parts[:1]
         total_width = sum(max(0.001, float(part["region"]["width"])) for part in parts)
         elapsed_width = 0.0
         for part in parts:
@@ -108,10 +112,13 @@ def _camera_at(events: list[dict], page_id: str, at: float, height: int, image_h
     return max(0.0, min(max(0.0, image_height - height), current))
 
 
-def _segment_for_time(segments: list[dict], at: float):
+def _segment_for_time(segments: list[dict], at: float, mode: str = "wipe"):
     ordered = sorted(segments, key=lambda item: (float(item.get("startTime", 0)), item["id"]))
     if not ordered:
         return None, None
+    if mode == "full":
+        started = [(index, segment) for index, segment in enumerate(ordered) if float(segment["startTime"]) <= at]
+        return started[-1] if started else (ordered[0], 0)
     active = [(index, segment) for index, segment in enumerate(ordered) if float(segment["startTime"]) <= at < float(segment["endTime"])]
     if active:
         index, segment = active[-1]
@@ -127,7 +134,8 @@ def _draw_one(project: dict, at: float, width: int, height: int, zoom: float, sa
     frame = Image.new("RGB", (width, height), BG)
     if not project.get("pages"):
         return frame
-    parts, reveals, active = _part_progress(segment, at) if segment else ([], [], 0)
+    mode = project.get("highlight", {}).get("mode", "wipe")
+    parts, reveals, active = _part_progress(segment, at, mode) if segment else ([], [], 0)
     page_id = parts[active]["pageId"] if segment else project["pages"][0]["id"]
     page = next((p for p in project["pages"] if p["id"] == page_id), project["pages"][0])
     image, x_offset, y_padding, ink_mask = page_cache[page["id"]]
@@ -160,9 +168,13 @@ def render_frame(project: dict, at: float, width: int, height: int, zoom: float 
     pages = {page["id"]: _page_layout(page, media_dir, width, height, zoom) for page in project.get("pages", [])}
     timed_ids = {flag.get("segmentId") for flag in project.get("flags", []) if flag.get("kind") != "end"}
     segments = sorted((segment for segment in project.get("segments", []) if segment.get("timingSet") or segment["id"] in timed_ids), key=lambda item: (float(item.get("startTime", 0)), item["id"]))
-    events = _scroll_events(segments, pages, height, safe_zone)
-    segment, index = _segment_for_time(segments, at)
-    frame = _draw_one(project, at, width, height, zoom, safe_zone, pages, events, segment)
+    mode = project.get("highlight", {}).get("mode", "wipe")
+    events = _scroll_events(segments, pages, height, safe_zone, mode)
+    segment, index = _segment_for_time(segments, at, mode)
+    show_highlight = segment is not None and at >= float(segment["startTime"])
+    if segment is not None and (mode != "full" or index == len(segments) - 1):
+        show_highlight = show_highlight and at < float(segment["endTime"])
+    frame = _draw_one(project, at, width, height, zoom, safe_zone, pages, events, segment, show_highlight)
 
     if segment is not None and index and at - float(segment["startTime"]) < 0.18:
         previous = segments[index - 1]

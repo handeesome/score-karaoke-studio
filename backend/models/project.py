@@ -51,7 +51,7 @@ class ProjectDocument(BaseModel):
     flags: list[dict] = []
     audioDuration: float | None = Field(default=None, gt=0)
     export: dict = {"preset": "landscape", "width": 1920, "height": 1080, "fps": 30, "scoreZoom": 1.0}
-    highlight: dict = {"opacity": 0.32}
+    highlight: dict = {"opacity": 0.32, "mode": "wipe"}
 
     @model_validator(mode="after")
     def valid_segment_pages(self):

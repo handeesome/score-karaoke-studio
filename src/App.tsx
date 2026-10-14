@@ -118,18 +118,30 @@ function App() {
   const currentPage: ScorePage | undefined = project.pages[activePage]
   const visibleFlags = recoverFlagsFromTiming(project).flags || []
   const timedIds = new Set(visibleFlags.filter(flag => flag.kind !== 'end').map(flag => flag.segmentId))
-  const activeSegment = useMemo(() => project.segments
-    .filter(segment => (segment.timingSet || timedIds.has(segment.id)) && segment.startTime <= time && time < segment.endTime)
-    .sort((a, b) => b.startTime - a.startTime)[0], [project.segments, visibleFlags, time])
-  const progress = activeSegment ? calculateKaraokeProgress(activeSegment.startTime, activeSegment.endTime, [], time) : 0
+  const highlightMode = project.highlight?.mode === 'full' ? 'full' : 'wipe'
+  const activeSegment = useMemo(() => {
+    const timed = project.segments.filter(segment => segment.timingSet || timedIds.has(segment.id))
+      .sort((a, b) => a.startTime - b.startTime || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    if (highlightMode === 'full') {
+      const started = timed.filter(segment => segment.startTime <= time)
+      const current = started[started.length - 1]
+      return current && (current !== timed[timed.length - 1] || time < current.endTime) ? current : undefined
+    }
+    const active = timed.filter(segment => segment.startTime <= time && time < segment.endTime)
+    return active[active.length - 1]
+  }, [project.segments, visibleFlags, time, highlightMode])
+  const progress = activeSegment ? highlightMode === 'full' ? 1 : calculateKaraokeProgress(activeSegment.startTime, activeSegment.endTime, [], time) : 0
   const markedSegments = new Set(visibleFlags.filter(flag => flag.kind !== 'end').map(flag => flag.segmentId))
   const nextUnmarkedIndex = project.segments.findIndex(segment => !markedSegments.has(segment.id))
   const nextFlagLabel = nextUnmarkedIndex < 0 ? visibleFlags.some(flag => flag.kind === 'end') ? '完成' : '收尾' : String(nextUnmarkedIndex + 1).padStart(2, '0')
   const activeRegions = activeSegment ? segmentRegions(activeSegment) : []
-  const activeReveal = regionReveal(activeRegions, progress)
+  const activeReveal = highlightMode === 'full' ? activeRegions.map(() => 1) : regionReveal(activeRegions, progress)
   const unfinishedPart = activeReveal.findIndex(value => value < 1)
-  const activePart = unfinishedPart >= 0 ? unfinishedPart : Math.max(0, activeRegions.length - 1)
+  const activePart = highlightMode === 'full' ? 0 : unfinishedPart >= 0 ? unfinishedPart : Math.max(0, activeRegions.length - 1)
   const fileName = (name: string | null) => name ? name.replace(/\.[^.]+$/, '') : null
+  const changeHighlightMode = (mode: 'wipe' | 'full') => setProject(current => ({
+    ...current, highlight: { ...current.highlight, mode },
+  }))
   const changeZoom = (step: number) => setZoom(current => {
     const automatic = (canvasRef.current?.clientWidth || window.innerWidth * .7) * .58 / 510
     return Math.max(.45, Math.min(2.5, +((current ?? automatic) + step).toFixed(2)))
@@ -693,7 +705,7 @@ function App() {
 
   return <div className="app-shell">
     <header className="topbar">
-      <div className="brand"><div className="brand-mark"><Music2 size={17} strokeWidth={2.4} /></div><span>谱间</span><span className="brand-divider"/><span className="product-label">歌谱同步工作台</span></div>
+      <div className="topbar-left"><div className="brand"><div className="brand-mark"><Music2 size={17} strokeWidth={2.4} /></div><span>谱间</span><span className="brand-divider"/><span className="product-label">歌谱同步工作台</span></div><div className="highlight-mode-control" role="group" aria-label="文字高亮方式"><span>高亮</span><button type="button" aria-pressed={highlightMode === 'wipe'} title="播放时从左到右逐渐高亮文字" onClick={() => changeHighlightMode('wipe')}>从左到右</button><button type="button" aria-pressed={highlightMode === 'full'} title="乐句开始时整框高亮，直到下一句开始" onClick={() => changeHighlightMode('full')}>整框</button></div></div>
       <div className="top-actions"><button className="icon-button" title="撤销（Ctrl+Z）" disabled={!undoHistory.current.length} onClick={undoProject}><Undo2 size={17}/></button><button className="icon-button" title="重做（Ctrl+Shift+Z）" disabled={!redoHistory.current.length} onClick={redoProject}><Redo2 size={17}/></button><span className="top-separator"/><button className="button button-primary" onClick={openExport}><Upload size={15}/>导出视频</button></div>
     </header>
     <div className="main-layout">
