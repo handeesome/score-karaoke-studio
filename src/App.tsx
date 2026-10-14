@@ -6,6 +6,7 @@ import AutoAlignDialog from './components/AutoAlignDialog'
 import TimelinePanel from './components/TimelinePanel'
 import AutoBoxDialog from './components/AutoBoxDialog'
 import ProgressDialog from './components/ProgressDialog'
+import HomeImportView from './components/HomeImportView'
 import { initialProject } from './types'
 import { copyRegionToNextLine, loadInkPage } from './scoreInk'
 import { bindTimingToScoreOrder, calculateCameraTarget, calculateKaraokeProgress, fitRegion, formatTime, migrateLegacyCuts, recoverFlagsFromTiming, regionPositionKey, regionReveal, segmentRegions, sharedRegionKey } from './utils'
@@ -42,6 +43,8 @@ function App() {
   const [autoCandidates, setAutoCandidates] = useState<AutoCandidate[] | null>(null)
   const [boxCandidates, setBoxCandidates] = useState<AutoBoxCandidate[] | null>(null)
   const [boxBusy, setBoxBusy] = useState(false)
+  const [scoreImporting, setScoreImporting] = useState(false)
+  const [audioImporting, setAudioImporting] = useState(false)
   const [duplicateBusy, setDuplicateBusy] = useState(false)
   const [analysisProgress, setAnalysisProgress] = useState<{ kind: 'boxes' | 'align'; percent: number; stage: string } | null>(null)
   const [tool, setTool] = useState<'select' | 'row' | 'cut'>('select')
@@ -261,6 +264,7 @@ function App() {
   const onScore = async (selection?: FileList | null) => {
     const files = Array.from(selection || [])
     if (!files.length) return
+    setScoreImporting(true)
     const replacing = Boolean(project.source.pdf)
     const form = new FormData(); files.forEach(file => form.append('files', file))
     try {
@@ -278,9 +282,11 @@ function App() {
       setActivePage(0); selectOne(null); setTime(0); setPlaying(false); setTool('row')
       flash(replacing ? '已替换乐谱，原有标注已清空' : `已导入 ${pages.length} 页乐谱`)
     } catch (error) { flash(error instanceof Error ? error.message : '无法连接渲染服务，请先启动后端') }
+    finally { setScoreImporting(false) }
   }
   const onAudio = async (file?: File) => {
     if (!file) return
+    setAudioImporting(true)
     const replacing = Boolean(project.source.audio)
     try {
       const body = new FormData(); body.append('file', file)
@@ -295,6 +301,7 @@ function App() {
       if (audioRef.current) { audioRef.current.src = url; audioRef.current.load() }
       flash(replacing ? '已替换音频，请重新打点校准时间' : '音频已载入，可以开始播放')
     } catch (error) { flash(error instanceof Error ? error.message : '音频导入失败，请重试') }
+    finally { setAudioImporting(false) }
   }
   const togglePlay = () => { const el = audioRef.current; if (!el) { flash('请先导入 MP3 音频'); return }; if (el.paused) { void el.play(); setPlaying(true) } else { el.pause(); setPlaying(false) } }
   const seek = (next: number) => { const el = audioRef.current; if (!el) return; el.currentTime = Math.max(0, Math.min(duration || 0, next)); setTime(el.currentTime) }
@@ -343,6 +350,7 @@ function App() {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      if (!project.pages.length || !project.source.pdf || !project.source.audio || !project.source.audioUrl) return
       if (resetOpen || autoCandidates || boxCandidates || exportOpen) { if (event.key === 'Escape') { setResetOpen(false); setAutoCandidates(null); setBoxCandidates(null) }; return }
       const target = event.target as HTMLElement
       if (target?.matches('input, textarea, select') || target?.isContentEditable) return
@@ -723,6 +731,19 @@ function App() {
     event.currentTarget.setPointerCapture(event.pointerId)
   }
 
+  const importControls = <>
+    <input ref={scoreInput} type="file" accept="application/pdf,.pdf,image/jpeg,.jpg,.jpeg,image/png,.png,image/webp,.webp" multiple hidden onChange={e => { void onScore(e.target.files); e.currentTarget.value = '' }}/>
+    <input ref={audioInput} type="file" accept="audio/mpeg,audio/mp3,.mp3,audio/wav,.wav,audio/mp4,.m4a,audio/ogg,.ogg" hidden onChange={e => { void onAudio(e.target.files?.[0]); e.currentTarget.value = '' }}/>
+    <audio ref={audioRef} src={audioUrl || project.source.audioUrl || undefined} onLoadedMetadata={e => { const next = e.currentTarget.duration; setDuration(next); setProject(p => ({ ...p, audioDuration: next })) }} onTimeUpdate={e => setTime(e.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)}/>
+  </>
+  const hasScore = project.pages.length > 0 && Boolean(project.source.pdf)
+  const hasAudio = Boolean(project.source.audio && project.source.audioUrl)
+  if (!hasScore || !hasAudio) return <>
+    <HomeImportView scoreName={hasScore ? fileName(project.source.pdf) : null} audioName={hasAudio ? fileName(project.source.audio) : null} scoreImporting={scoreImporting} audioImporting={audioImporting} onChooseScore={() => scoreInput.current?.click()} onChooseAudio={() => audioInput.current?.click()}/>
+    {importControls}
+    {message && <div className="toast"><Check size={15}/>{message}</div>}
+  </>
+
   return <div className="app-shell">
     <header className="topbar">
       <div className="topbar-left"><div className="brand"><div className="brand-mark"><Music2 size={17} strokeWidth={2.4} /></div><span>谱间</span><span className="brand-divider"/><span className="product-label">歌谱同步工作台</span></div><div className="highlight-mode-control" role="group" aria-label="文字高亮方式"><span>高亮</span><button type="button" aria-pressed={highlightMode === 'wipe'} title="播放时从左到右逐渐高亮文字" onClick={() => changeHighlightMode('wipe')}>从左到右</button><button type="button" aria-pressed={highlightMode === 'full'} title="乐句开始时整框高亮，直到下一句开始" onClick={() => changeHighlightMode('full')}>整框</button></div></div>
@@ -776,7 +797,7 @@ function App() {
     {analysisProgress && <ProgressDialog key={analysisProgress.kind} kind={analysisProgress.kind} percent={analysisProgress.percent} stage={analysisProgress.stage}/>}
     {autoCandidates && <AutoAlignDialog candidates={autoCandidates} existingCount={project.segments.length} playing={playing} onClose={() => setAutoCandidates(null)} onListen={at => { seek(at); const audio = audioRef.current; if (audio) { void audio.play(); setPlaying(true) } }} onPause={() => { audioRef.current?.pause(); setPlaying(false) }} onApply={applyAutoCandidates}/>}
     {boxCandidates && <AutoBoxDialog pages={project.pages} candidates={boxCandidates} existingCount={project.segments.length} onClose={() => setBoxCandidates(null)} onApply={applyAutoBoxes}/>}
-    <input ref={scoreInput} type="file" accept="application/pdf,.pdf,image/jpeg,.jpg,.jpeg,image/png,.png,image/webp,.webp" multiple hidden onChange={e => { void onScore(e.target.files); e.currentTarget.value = '' }}/><input ref={audioInput} type="file" accept="audio/mpeg,audio/mp3,.mp3,audio/*" hidden onChange={e => { void onAudio(e.target.files?.[0]); e.currentTarget.value = '' }}/><audio ref={audioRef} onLoadedMetadata={e => { const next = e.currentTarget.duration; setDuration(next); setProject(p => ({ ...p, audioDuration: next })) }} onTimeUpdate={e => setTime(e.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)}/>{message && <div className="toast"><Check size={15}/>{message}</div>}
+    {importControls}{message && <div className="toast"><Check size={15}/>{message}</div>}
     {exportOpen && <ExportDialog settings={exportSettings} previewUrl={previewUrl} previewTime={previewTime} duration={duration || project.audioDuration || 0} validation={validation} job={exportJob} busy={exportBusy} onSettings={settings => setExportSettings(settings)} onPreviewTime={setPreviewTime} onExport={() => { void startVideoExport() }} onClose={() => setExportOpen(false)}/>}
   </div>
 }
