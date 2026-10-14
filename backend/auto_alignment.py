@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+import os
 import json
 import re
 import shutil
@@ -29,6 +30,11 @@ def normalize(value: str) -> str:
 
 
 def _tesseract() -> str:
+    explicit = os.environ.get("PUJIAN_TESSERACT")
+    if explicit:
+        if Path(explicit).is_file():
+            return explicit
+        raise RuntimeError(f"找不到配置的 Tesseract：{explicit}")
     found = shutil.which("tesseract")
     if found:
         return found
@@ -59,6 +65,7 @@ def read_score_rows(pages: list[dict], media_dir: Path,
             [_tesseract(), "stdin", "stdout", "-l", "chi_sim+eng", "--psm", "11", "tsv"],
             input=output.getvalue(), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             timeout=120, check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if result.returncode:
             raise RuntimeError("乐谱文字识别失败；请确认 Tesseract 安装了 chi_sim 语言包")
@@ -411,7 +418,8 @@ def suggest(project: dict, media_dir: Path, models_dir: Path, audio_path: Path, 
                            lambda done, total: update(f"已识别 {done}/{total} 页乐谱", 5 + round(15 * done / total)))
     boxes = score_box_rows(project, rows, media_dir)
     update(f"已找到 {len(boxes)} 个歌词框，正在加载音频模型", 25)
-    model = WhisperModel("base", device="cpu", compute_type="int8", download_root=str(models_dir))
+    from backend.runtime import whisper_source, vocal_cache
+    model = WhisperModel(whisper_source(models_dir), device="cpu", compute_type="int8", download_root=str(models_dir))
     transcript = []
     last_percent = 30
     # Short clips and word timestamps keep music from shifting an entire song's
@@ -437,12 +445,12 @@ def suggest(project: dict, media_dir: Path, models_dir: Path, audio_path: Path, 
         candidates = append_repeated_tail(candidates, transcript, duration)
     from backend.vocal_waveform import cache_key, separator_available, vocal_waveform_for_audio
 
-    vocal_cache = models_dir.parent / "vocals"
-    cached = vocal_cache / cache_key(audio_path) / "waveform.json"
+    vocals_dir = vocal_cache()
+    cached = vocals_dir / cache_key(audio_path) / "waveform.json"
     if cached.is_file() or separator_available():
         update("正在按人声波形的低谷校准换句时间", 90)
         waveform = (json.loads(cached.read_text(encoding="utf-8")) if cached.is_file()
-                    else vocal_waveform_for_audio(audio_path, vocal_cache, lambda stage: update(stage, 90)))
+                    else vocal_waveform_for_audio(audio_path, vocals_dir, lambda stage: update(stage, 90)))
         return refine_with_vocal_waveform(candidates, waveform, duration)
     update("未安装人声分离组件，正在用原音频起音校准", 90)
     return refine_interpolated_starts(candidates, audio_path)

@@ -2,6 +2,8 @@
 
 在本机为 PDF 或图片歌谱中的歌词画框，与音频时间对齐，预览文字高亮，并导出带原音频的卡拉 OK 视频。界面为中文，当前只编辑一首歌，无需账号。
 
+Windows 免安装版可从 [GitHub Releases](https://github.com/handeesome/score-karaoke-studio/releases) 下载：`offline.zip` 附带模型和 OCR，`standard.zip` 首次使用相关功能需另行准备模型和 OCR。解压整个 ZIP 后运行 `Pujian.exe`；目标电脑需要 WebView2 和 .NET Framework 4.8，详见下方桌面版说明。
+
 ## 功能
 
 - 导入 PDF 或 JPG/JPEG、PNG、WebP 歌谱，以及 MP3、WAV、M4A 或 OGG 音频；多张歌谱图片可一次选择，按文件名中的数字顺序排列为多页。需要更换文件时，点击顶部的文件名重新选择。
@@ -52,6 +54,58 @@ npm run dev
 浏览器打开 <http://127.0.0.1:5173/>。第一次使用人声波形会下载 `htdemucs` 模型并在 CPU 上分离人声，可能需要几分钟；第一次使用自动对齐也会下载 Whisper base 模型。模型缓存后可重复使用。人声分离结果用于时间轴和自动对齐时的换句校准，播放和导出仍使用原音频。未安装 Demucs 时，人声波形无法显示，自动对齐会退回原音频起音校准。
 
 如果时间轴显示 `open() got an unexpected keyword argument 'metadata_errors'`，关闭启动控制台，拉取最新代码后重新运行 `启动谱间.cmd`。启动脚本会安装兼容的 PyAV 版本；已生成的人声音轨会复用，无需再次分离同一首音频。
+
+## Windows 桌面版与 GitHub Releases
+
+桌面版直接复用当前 React 界面，由 pywebview 打开独立窗口；无需另外开发一套前端。原来的源码启动方式仍可使用。
+
+### 从源码构建 Windows ZIP
+
+在 Windows 10/11 x64 上准备 Python 3.11、Node.js（含 npm），然后在项目根目录执行：
+
+```powershell
+# 普通版：包含程序与 Python 依赖，不带模型和 OCR。
+.\构建Windows软件.cmd
+
+# 离线模型版：复用兼容的本地缓存，下载缺少的模型，附带本机 Tesseract。
+.\构建Windows软件.cmd -IncludeModels -DownloadModels
+```
+
+首次构建需要联网安装依赖。脚本默认使用独立的 `.build-venv`，构建前端后用 PyInstaller 打包，并对生成的 EXE 做自检。输出在 `release/Pujian-v版本号-Windows-x64-standard.zip` 或 `-offline.zip`。打包可能需要几分钟及数 GB 可用空间；模型和 PyTorch 会使成品较大。
+
+`-IncludeModels` 不加 `-DownloadModels` 时，只查找本地模型，缺少或不兼容就报错，不会偷偷下载。模型检查通过后才开始 EXE 构建。Whisper 必须是完整的 faster-whisper 格式；Demucs 必须包含 `htdemucs.yaml` 和其中列出的配套权重，其他型号的缓存不能替代。也可以明确指定来源：
+
+```powershell
+.\构建Windows软件.cmd -IncludeModels `
+  -WhisperModelPath 'D:\Models\faster-whisper-base' `
+  -DemucsModelPath 'D:\Models\demucs' `
+  -TesseractPath 'C:\Program Files\Tesseract-OCR'
+```
+
+离线模型版要求本机已有 Tesseract 的 `tesseract.exe`、DLL 及 `chi_sim`、`eng` 语言包，它们会复制进发行包。已有完整构建环境时可以用 `-PythonPath '.\.venv\Scripts\python.exe'` 复用；`-SkipInstall` 仅适用于桌面依赖已安装的环境。
+
+Windows 桌面窗口还需要 .NET Framework 4.8 与 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)。目标电脑已有它们时，离线模型版可直接离线使用。若需要在没有 WebView2 的电脑上离线运行，从微软获取并解压 **Windows x64 Fixed Version Runtime**，构建时加 `-WebView2Path 'D:\WebView2固定版本目录'`，将运行时也放进 ZIP。不要把安装器路径作为此参数。
+
+也可以单独准备可复用的模型目录：
+
+```powershell
+.\.build-venv\Scripts\python.exe scripts/prepare_models.py --download
+```
+
+### 发布与使用
+
+1. 将源码、依赖清单、启动和构建脚本、说明提交到 GitHub；`dist/`、`build/`、`release/`、虚拟环境、模型和用户数据继续由 `.gitignore` 排除。
+2. 更新 `package.json` 中的版本号，构建并手动确认导入、播放、打点、关闭重开、视频导出。离线版还应在目标电脑断网检查。
+3. 在 GitHub 创建对应版本的 Release，将 `release/` 中的 ZIP 作为附件上传。源码下载与 Windows 成品下载分别提供。脚本不会自动提交或发布。
+4. 使用者解压整个 ZIP，双击 `Pujian.exe`。无需安装 Python、Node.js；不要只复制 EXE，也不要直接在 ZIP 内运行。
+
+程序自检会检查网页和静态资源、本机服务、FFmpeg、Demucs 工作进程；离线版还会实际加载 Whisper、Demucs 并检查 OCR 语言包。自检不会下载缺少的离线模型。通过后才生成最终 ZIP；失败的构建目录保留日志，已有同版本 ZIP 不会被覆盖。
+
+桌面版数据保存在 `%LOCALAPPDATA%\Pujian`，包括当前编辑记录、歌谱/音频、模型缓存和导出视频；更换软件目录或更新版本不会清空这些文件。桌面版与浏览器版保存的编辑状态相互独立，旧项目不自动迁移。关闭桌面窗口会结束后台及它启动的模型/编码进程；同时只运行一个桌面实例。
+
+软件优先使用 `models/whisper-base` 与 `models/demucs` 下的附带模型，也会检查已缓存的 Whisper base；不扫描整个硬盘。已有其他目录中的兼容模型时，可设置 `PUJIAN_WHISPER_MODEL`、`PUJIAN_DEMUCS_REPO` 环境变量。离线版缺失模型会明确报错，普通版缺失模型时首次使用会下载。
+
+发行包带有项目许可证和 `third-party-notices/` 中的依赖许可证清单；打包脚本只收集模型及工具，不会收集当前歌谱、音频或打点数据。GitHub Release 单个附件不能超过 2 GiB，脚本会检查最终 ZIP 大小。
 
 ## 基本操作
 

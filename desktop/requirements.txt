@@ -1,0 +1,4 @@
+-r ../backend/requirements.txt
+-r ../backend/requirements-vocals.txt
+pywebview>=5,<7
+pyinstaller>=6,<7

@@ -1,0 +1,20 @@
+谱间 · Windows 便携版
+
+1. 把整个 ZIP 解压到固定文件夹，不要在压缩包内直接运行，也不要只复制 Pujian.exe。
+2. 双击 Pujian.exe 打开软件。关闭窗口会同时结束后台、模型任务及视频编码进程。
+3. 无需安装 Python、Node.js。Windows 10/11 x64 需要 Microsoft Edge WebView2 Runtime 和 .NET Framework 4.8。
+   如果 tools/webview2 目录已随包提供，就使用附带的浏览器运行时。
+   若启动提示缺少 WebView2，可到微软官方下载并安装，再重新打开软件：
+   https://developer.microsoft.com/microsoft-edge/webview2/
+4. offline 版附带 Whisper、Demucs 和 Tesseract 中文/英文语言数据，可离线使用相关功能。
+   standard 版首次分析可能需要下载模型，OCR 功能需要另装 Tesseract 和中文/英文语言包。
+5. 编辑记录、导入文件、缓存、视频和日志保存在 %LOCALAPPDATA%\Pujian。
+   导出的视频位于该目录下的 exports 文件夹。更新软件时保留这个数据目录。
+6. 桌面版与原来的浏览器版分别保存编辑状态；旧项目不会自动迁移。
+7. 同一时间只打开一个谱间桌面窗口。软件只监听本机 127.0.0.1:18765。
+8. 启动失败时查看数据目录里的 desktop.log 和 backend.log。
+
+本机模型（可选，适合已经下载过模型的用户）：
+设置环境变量 PUJIAN_WHISPER_MODEL 指向含 model.bin、config.json、tokenizer.json 的 faster-whisper 模型目录。
+设置环境变量 PUJIAN_DEMUCS_REPO 指向含 htdemucs.yaml 及其配套 .th 权重的 Demucs 本地模型目录。
+模型格式必须与组件兼容；OpenAI Whisper 的单个 .pt 文件不能直接用于 faster-whisper。

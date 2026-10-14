@@ -29,15 +29,16 @@ from backend.waveform import waveform_for_audio
 from backend.vocal_waveform import cache_key as vocal_cache_key, separator_available, vocal_waveform_for_audio
 from backend.rendering.frame_renderer import render_frame
 from backend.rendering.video_renderer import encode_video
+from backend.runtime import data_root, whisper_cache, vocal_cache
 
-ROOT = Path(__file__).resolve().parent
+ROOT = data_root()
 PROJECTS = ROOT / "projects"
 MEDIA = ROOT / "media"
 EXPORTS = ROOT / "exports"
-VOCAL_CACHE = ROOT.parent / "reference" / "vocals"
-PROJECTS.mkdir(exist_ok=True)
-MEDIA.mkdir(exist_ok=True)
-EXPORTS.mkdir(exist_ok=True)
+VOCAL_CACHE = vocal_cache()
+PROJECTS.mkdir(parents=True, exist_ok=True)
+MEDIA.mkdir(parents=True, exist_ok=True)
+EXPORTS.mkdir(parents=True, exist_ok=True)
 executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="score-export")
 alignment_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="score-alignment")
 box_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="score-boxes")
@@ -189,7 +190,7 @@ def _run_alignment(job_id: str, project: dict, audio_path: Path, duration: float
         with alignment_lock:
             alignment_jobs[job_id].update(status="running", stage=stage, progress=progress)
     try:
-        candidates = suggest_alignment(project, MEDIA, ROOT.parent / "reference" / "models", audio_path, duration, update)
+        candidates = suggest_alignment(project, MEDIA, whisper_cache(), audio_path, duration, update)
         with alignment_lock:
             alignment_jobs[job_id].update(status="completed", stage="候选标注已生成", progress=100, candidates=candidates)
     except Exception as error:

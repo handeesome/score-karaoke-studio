@@ -53,13 +53,20 @@ def vocal_waveform_for_audio(path: Path, cache_root: Path, update: Callable[[str
         environment = os.environ.copy()
         environment["TORCH_HOME"] = str(model_dir)
         environment["PATH"] = str(tools_dir) + os.pathsep + environment.get("PATH", "")
-        update("正在分离人声；首次运行会下载模型，CPU 处理可能需要几分钟")
+        from backend.runtime import local_demucs
+        repo = local_demucs()
+        update("正在使用本地模型分离人声，CPU 处理可能需要几分钟" if repo else
+               "正在分离人声；首次运行会下载模型，CPU 处理可能需要几分钟")
+        worker = ([sys.executable, "--demucs"] if getattr(sys, "frozen", False)
+                  else [sys.executable, "-m", "demucs"])
         command = [
-            sys.executable, "-m", "demucs", "--two-stems=vocals", "--other-method", "none",
+            *worker, "--two-stems=vocals", "--other-method", "none",
             "-n", "htdemucs", "-d", "cpu", "--segment", "7", "--overlap", "0.1",
             "--mp3", "--mp3-bitrate", "192",
             "--out", str(work_dir), str(path),
         ]
+        if repo:
+            command.extend(["--repo", str(repo)])
         try:
             completed = subprocess.run(
                 command, env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

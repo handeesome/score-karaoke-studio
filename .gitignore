@@ -1,5 +1,9 @@
 node_modules/
 dist/
+build/
+release/
+.build-venv/
+*.spec
 .venv/
 .launcher/
 reference/models/
