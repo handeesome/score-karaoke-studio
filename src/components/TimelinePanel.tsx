@@ -10,6 +10,14 @@ interface WaveformData {
   kind: string
 }
 
+interface VocalProgress {
+  progress: number | null
+  elapsedSeconds: number
+  lastProgressSeconds: number
+  completedSegments?: number
+  receivedAt: number
+}
+
 interface TimelinePanelProps {
   audioUrl?: string | null
   audioName?: string | null
@@ -41,6 +49,8 @@ export default function TimelinePanel({ audioUrl, audioName, duration, flags, se
   const [waveform, setWaveform] = useState<WaveformData | null>(null)
   const [loading, setLoading] = useState(false)
   const [stage, setStage] = useState('')
+  const [vocalProgress, setVocalProgress] = useState<VocalProgress | null>(null)
+  const [now, setNow] = useState(Date.now())
   const [error, setError] = useState<string | null>(null)
   const [zoom, setZoom] = useState(1)
   const [draggedSegment, setDraggedSegment] = useState<{ id: string; startTime: number; endTime: number } | null>(null)
@@ -53,6 +63,7 @@ export default function TimelinePanel({ audioUrl, audioName, duration, flags, se
   useEffect(() => {
     setWaveform(null)
     setError(null)
+    setVocalProgress(null)
     if (!audioUrl) { setLoading(false); return }
     const controller = new AbortController()
     setLoading(true)
@@ -64,7 +75,11 @@ export default function TimelinePanel({ audioUrl, audioName, duration, flags, se
       let result = await response.json()
       if (!response.ok) throw new Error(result.detail || '无法读取音频波形')
       while (result.status === 'queued' || result.status === 'running') {
+        if (controller.signal.aborted) return
         setStage(result.stage || '正在提取人声…')
+        setVocalProgress({ progress: typeof result.progress === 'number' ? result.progress : null,
+          elapsedSeconds: result.elapsedSeconds || 0, lastProgressSeconds: result.lastProgressSeconds || 0,
+          completedSegments: result.completedSegments, receivedAt: Date.now() })
         await new Promise(resolve => window.setTimeout(resolve, 1500))
         if (controller.signal.aborted) return
         const status = await fetch(`/api/waveform/vocals/${result.jobId}`, { signal: controller.signal })
@@ -81,6 +96,17 @@ export default function TimelinePanel({ audioUrl, audioName, duration, flags, se
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
   }, [audioUrl])
+
+  useEffect(() => {
+    if (!loading) return
+    setNow(Date.now())
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [loading])
+
+  const sinceReceived = Math.max(0, (now - (vocalProgress?.receivedAt || now)) / 1000)
+  const elapsed = (vocalProgress?.elapsedSeconds || 0) + sinceReceived
+  const quietSeconds = (vocalProgress?.lastProgressSeconds || 0) + sinceReceived
 
   const extent = duration > 0 ? duration : waveform?.duration || 90
   const timedSegmentIds = new Set(flags.filter(flag => flag.kind !== 'end').map(flag => flag.segmentId))
@@ -210,7 +236,11 @@ export default function TimelinePanel({ audioUrl, audioName, duration, flags, se
           <div className="wave-track">
             <div className="wave-stage" style={{ backgroundSize: `${100 / tickCount}% 100%` }} onPointerDown={startSeek} onPointerMove={moveSeek} onPointerUp={endSeek} onPointerCancel={event => { if (draggingPointer.current === event.pointerId) draggingPointer.current = null }} onLostPointerCapture={() => { draggingPointer.current = null }} role="slider" aria-label="音频时间轴，点击或拖动定位" aria-valuemin={0} aria-valuemax={Math.round(extent)} aria-valuenow={Math.round(time)} tabIndex={audioName ? 0 : -1} onKeyDown={event => { if (event.key === 'ArrowLeft') { event.preventDefault(); onSeek(Math.max(0, time - 1)) } else if (event.key === 'ArrowRight') { event.preventDefault(); onSeek(Math.min(extent, time + 1)) } }}>
               {waveform && <svg className="waveform-svg" viewBox={`0 0 ${waveform.levels.length} 100`} preserveAspectRatio="none" aria-hidden="true"><path d={peakPath} className="waveform-peaks"/><path d={levelPath} className="waveform-levels"/></svg>}
-              {!waveform && <div className="waveform-placeholder">{loading ? stage : error || '导入 MP3 后显示人声波形'}</div>}
+              {!waveform && (loading ? <div className="vocal-progress" aria-label="人声分离进度">
+                <div className="vocal-progress-heading"><span role="status">{stage}</span><span>{vocalProgress?.progress != null ? `${Math.floor(vocalProgress.progress)}%` : '准备中'}</span></div>
+                <div className={`vocal-progress-bar ${vocalProgress?.progress == null ? 'indeterminate' : ''}`} role="progressbar" aria-label="人声分离" aria-valuemin={0} aria-valuemax={100} aria-valuenow={vocalProgress?.progress ?? undefined}><span style={vocalProgress?.progress != null ? { width: `${vocalProgress.progress}%` } : undefined}/></div>
+                <div className="vocal-progress-detail"><span>已用 {clock(elapsed)}{vocalProgress?.completedSegments ? ` · 已完成 ${vocalProgress.completedSegments} 段` : ''}</span><span>{quietSeconds >= 120 ? '当前阶段耗时较长，可检查 CPU 和内存占用' : '完成一段后更新进度'}</span></div>
+              </div> : <div className="waveform-placeholder">{error || '导入 MP3 后显示人声波形'}</div>)}
               {segments.map((segment, index) => { const shown = draggedSegment?.id === segment.id ? draggedSegment : segment; const assigned = segment.timingSet || timedSegmentIds.has(segment.id); return <button key={segment.id} className={`timeline-block ${selected === segment.id ? 'current' : ''} ${assigned ? '' : 'unassigned'}`} style={{ left: `${Math.max(0, Math.min(100, shown.startTime / extent * 100))}%`, width: `${Math.max(0, Math.min(100, shown.endTime / extent * 100)) - Math.max(0, Math.min(100, shown.startTime / extent * 100))}%` }} title={assigned ? `乐句 ${index + 1} · ${formatTime(shown.startTime)}–${formatTime(shown.endTime)}` : `乐句 ${index + 1} · 待设置时间`} onPointerDown={event => startBlockDrag(event, segment)} onPointerMove={moveBlock} onPointerUp={endBlockDrag} onPointerCancel={() => { blockDrag.current = null; setDraggedSegment(null) }} onLostPointerCapture={() => { blockDrag.current = null; setDraggedSegment(null) }} onClick={event => { event.stopPropagation(); onSelect(segment.id) }}><span className="timeline-resize-grip start" aria-hidden="true"/><span className="timeline-block-text">乐句 {String(index + 1).padStart(2, '0')}</span><span className="timeline-resize-grip end" aria-hidden="true"/></button> })}
               <div className="timeline-cursor" style={{ left: `${Math.max(0, Math.min(100, time / extent * 100))}%` }}/>
             </div>

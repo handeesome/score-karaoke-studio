@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import runpy
 import shutil
 import subprocess
 import sys
@@ -95,6 +96,8 @@ def build(args):
     if sys.platform != "win32" or platform.machine().lower() not in ("amd64", "x86_64"):
         raise RuntimeError("请在 Windows x64 上构建 Windows 发行包")
     version = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"]
+    if runpy.run_path(str(ROOT / 'desktop/version.py'))['VERSION'] != version:
+        raise RuntimeError('请同步更新 desktop/version.py 的版本号')
     edition = "offline" if args.include_models else "standard"
     # Use a fresh staging directory each time. Never delete a previous release or user data.
     output = ROOT / "release"
@@ -114,10 +117,12 @@ def build(args):
                    "--name", "Pujian", "--paths", ROOT, "--distpath", stage,
                    "--workpath", stage / "work", "--specpath", stage,
                    "--add-data", f"{ROOT / 'dist'};dist",
+                   "--add-data", f"{ROOT / 'desktop/update-install.ps1'};.",
                    "--hidden-import", "uvicorn.logging", "--hidden-import", "uvicorn.loops.auto",
                    "--hidden-import", "uvicorn.protocols.http.auto", "--hidden-import", "uvicorn.protocols.websockets.auto",
                    "--hidden-import", "uvicorn.lifespan.on", "--hidden-import", "demucs.separate",
                    "--hidden-import", "desktop.windows_job", "--hidden-import", "backend.main",
+                   "--hidden-import", "backend.separation_worker",
                    "--exclude-module", "IPython", "--exclude-module", "pytest", "--exclude-module", "matplotlib",
                    "--exclude-module", "PyQt5", "--exclude-module", "PyQt6", "--exclude-module", "PySide6"]
     for package in ("webview", "demucs", "faster_whisper", "ctranslate2", "imageio_ffmpeg", "julius", "lameenc"):

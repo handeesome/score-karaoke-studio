@@ -59,6 +59,16 @@ def serve():
         return {"token": os.environ.get("PUJIAN_START_TOKEN"), "desktop": True}
 
     # Mount last, so /api and /media retain precedence over frontend files.
+    @app.get("/api/desktop/update-ready")
+    def update_ready():
+        from backend import main as backend
+        for collection, lock in ((backend.jobs, backend.jobs_lock), (backend.alignment_jobs, backend.alignment_lock),
+                                 (backend.box_jobs, backend.box_lock), (backend.vocal_jobs, backend.vocal_lock)):
+            with lock:
+                if any(job['status'] in ('queued', 'running') for job in collection.values()):
+                    return {"ready": False}
+        return {"ready": True}
+
     app.mount("/", StaticFiles(directory=frontend, html=True), name="desktop-ui")
     uvicorn.run(app, host="127.0.0.1", port=PORT, log_config=None, access_log=False)
 
@@ -149,6 +159,10 @@ def main():
         from demucs.separate import main as separate
         separate(sys.argv[sys.argv.index("--demucs") + 1:])
         return
+    if "--separate-vocals" in sys.argv:
+        from backend.separation_worker import main as separate
+        separate(sys.argv[sys.argv.index("--separate-vocals") + 1:])
+        return
     if "--serve" in sys.argv:
         serve()
         return
@@ -162,8 +176,10 @@ def main():
     webview.settings["ALLOW_DOWNLOADS"] = True
     process, job, log = start_backend(data)
     try:
-        webview.create_window("谱间 · 歌谱同步工作台", f"http://127.0.0.1:{PORT}/",
-                              width=1440, height=960, min_size=(1024, 700))
+        from desktop.updater import DesktopUpdater
+        updater = DesktopUpdater(BUNDLE, ASSETS, data)
+        updater.window = webview.create_window("谱间 · 歌谱同步工作台", f"http://127.0.0.1:{PORT}/",
+                              width=1440, height=960, min_size=(1024, 700), js_api=updater)
         webview.start(gui="edgechromium", private_mode=False, storage_path=str(data / "webview"))
     finally:
         stop_backend(process, job, log)
@@ -177,7 +193,7 @@ if __name__ == "__main__":
         main()
     except Exception as error:
         logging.exception("Desktop startup failed")
-        if not any(flag in sys.argv for flag in ("--serve", "--demucs", "--smoke-test")):
+        if not any(flag in sys.argv for flag in ("--serve", "--demucs", "--separate-vocals", "--smoke-test")):
             ctypes.windll.user32.MessageBoxW(None, f"{error}\n\n日志目录：{os.environ.get('PUJIAN_DATA_DIR', '')}",
                                             "谱间启动失败", 0x10)
         raise SystemExit(1)

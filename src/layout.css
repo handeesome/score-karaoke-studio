@@ -199,6 +199,16 @@ body{min-width:0;height:100dvh;overflow:hidden}
 .waveform-peaks{fill:#c4d5c5;opacity:.8}
 .waveform-levels{fill:#6e9977;opacity:.9}
 .waveform-placeholder{position:absolute;inset:22px 0 0;display:grid;place-items:center;color:#9ca79c;font-size:10px;pointer-events:none}
+.vocal-progress{position:absolute;left:12px;right:12px;top:29px;max-width:640px;margin:auto;display:grid;gap:5px;color:#637766;font-size:11px;pointer-events:none}
+.vocal-progress-heading,.vocal-progress-detail{display:flex;justify-content:space-between;gap:12px;line-height:1.3}
+.vocal-progress-heading{font-weight:600}
+.vocal-progress-detail{color:#7b887c;font-size:10px}
+.vocal-progress-bar{height:5px;overflow:hidden;border-radius:5px;background:#dfe7df}
+.vocal-progress-bar>span{display:block;height:100%;border-radius:5px;background:#729779;transition:width .4s ease}
+.vocal-progress-bar.indeterminate>span{width:28%;animation:vocal-progress-moving 1.8s ease-in-out infinite}
+@keyframes vocal-progress-moving{from{transform:translateX(-100%)}to{transform:translateX(360%)}}
+@media(prefers-reduced-motion:reduce){.vocal-progress-bar.indeterminate>span{animation:none}.vocal-progress-bar>span{transition:none}}
+@media(max-width:1100px){.vocal-progress{top:25px;gap:3px}.vocal-progress-detail>span:last-child{display:none}}
 .wave-stage .timeline-block{z-index:2;top:5px;height:20px;min-width:8px;padding:0 2px;display:flex;align-items:center;font-size:10px;font-weight:600;line-height:18px;cursor:grab;touch-action:none;user-select:none}
 .wave-stage .timeline-block.current{z-index:4}
 .wave-stage .timeline-block.unassigned{z-index:1;opacity:.45;border-style:dashed}
@@ -301,3 +311,6 @@ body{min-width:0;height:100dvh;overflow:hidden}
 .auto-box-footer label{display:flex;align-items:center;gap:5px;white-space:nowrap}
 .auto-box-footer>span{flex:1;color:#8f958b;font-size:9px}
 @media(max-width:900px){.auto-box-list-panel{width:210px}.auto-box-footer>span{display:none}}
+.desktop-update { position: relative; }
+.home-update { position: fixed; right: 32px; top: 24px; z-index: 10; }
+.desktop-update-error { position: absolute; top: 100%; right: 0; width: 260px; padding: 8px; background: #fff; color: #a43a30; box-shadow: 0 3px 12px #0002; font-size: 12px; z-index: 30; }

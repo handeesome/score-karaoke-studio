@@ -450,7 +450,7 @@ def suggest(project: dict, media_dir: Path, models_dir: Path, audio_path: Path, 
     if cached.is_file() or separator_available():
         update("正在按人声波形的低谷校准换句时间", 90)
         waveform = (json.loads(cached.read_text(encoding="utf-8")) if cached.is_file()
-                    else vocal_waveform_for_audio(audio_path, vocals_dir, lambda stage: update(stage, 90)))
+                    else vocal_waveform_for_audio(audio_path, vocals_dir, lambda stage, _details: update(stage, 90)))
         return refine_with_vocal_waveform(candidates, waveform, duration)
     update("未安装人声分离组件，正在用原音频起音校准", 90)
     return refine_interpolated_starts(candidates, audio_path)

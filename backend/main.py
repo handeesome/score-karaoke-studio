@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import shutil
 import uuid
+import time
 import json
 import io
 from concurrent.futures import ThreadPoolExecutor
@@ -320,17 +321,20 @@ def audio_waveform(request: WaveformRequest):
 
 
 def _run_vocal_waveform(job_id: str, path: Path):
-    def update(stage: str):
+    with vocal_lock:
+        vocal_jobs[job_id].update(status="running", startedAt=time.time())
+    def update(stage: str, details: dict):
         with vocal_lock:
-            vocal_jobs[job_id].update(status="running", stage=stage)
+            vocal_jobs[job_id].update(status="running", stage=stage, **details)
 
     try:
         result = vocal_waveform_for_audio(path, VOCAL_CACHE, update)
         with vocal_lock:
-            vocal_jobs[job_id].update(status="completed", stage="人声波形已生成", waveform=result)
+            vocal_jobs[job_id].update(status="completed", stage="人声波形已生成", waveform=result,
+                                      progress=100, finishedAt=time.time())
     except Exception as error:
         with vocal_lock:
-            vocal_jobs[job_id].update(status="failed", stage="人声分离失败", error=str(error))
+            vocal_jobs[job_id].update(status="failed", stage="人声分离失败", error=str(error), finishedAt=time.time())
 
 
 @app.post("/api/waveform/vocals")
@@ -347,7 +351,7 @@ def start_vocal_waveform(request: WaveformRequest):
         if existing and vocal_jobs[existing]["status"] != "failed":
             return {"jobId": existing, **vocal_jobs[existing]}
         job_id = uuid.uuid4().hex
-        vocal_jobs[job_id] = {"status": "queued", "stage": "等待提取人声"}
+        vocal_jobs[job_id] = {"status": "queued", "stage": "等待提取人声", "progress": None, "createdAt": time.time()}
         vocal_jobs_by_audio[key] = job_id
     vocal_executor.submit(_run_vocal_waveform, job_id, path)
     return {"jobId": job_id, "status": "queued", "stage": "等待提取人声"}
@@ -359,7 +363,10 @@ def vocal_waveform_status(job_id: str):
         job = vocal_jobs.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="找不到人声提取任务")
-        return {"jobId": job_id, **job}
+        now = time.time()
+        return {"jobId": job_id, **job,
+                "elapsedSeconds": max(0, round(job.get('finishedAt', now) - job.get('createdAt', job.get('startedAt', now)))),
+                "lastProgressSeconds": max(0, round(now - job.get('updatedAt', now)))}
 
 
 @app.post("/api/auto-boxes")

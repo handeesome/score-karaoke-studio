@@ -7,6 +7,7 @@ import TimelinePanel from './components/TimelinePanel'
 import AutoBoxDialog from './components/AutoBoxDialog'
 import ProgressDialog from './components/ProgressDialog'
 import HomeImportView from './components/HomeImportView'
+import DesktopUpdate from './components/DesktopUpdate'
 import { initialProject } from './types'
 import { copyRegionToNextLine, loadInkPage } from './scoreInk'
 import { bindTimingToScoreOrder, calculateCameraTarget, calculateKaraokeProgress, fitRegion, formatTime, migrateLegacyCuts, recoverFlagsFromTiming, regionPositionKey, regionReveal, segmentRegions, sharedRegionKey } from './utils'
@@ -738,16 +739,19 @@ function App() {
   </>
   const hasScore = project.pages.length > 0 && Boolean(project.source.pdf)
   const hasAudio = Boolean(project.source.audio && project.source.audioUrl)
+  const updateControl = <DesktopUpdate busy={autoBusy || boxBusy || exportBusy || scoreImporting || audioImporting || duplicateBusy}
+    save={() => localStorage.setItem('pujian-project', JSON.stringify(projectRef.current))}/>
   if (!hasScore || !hasAudio) return <>
     <HomeImportView scoreName={hasScore ? fileName(project.source.pdf) : null} audioName={hasAudio ? fileName(project.source.audio) : null} scoreImporting={scoreImporting} audioImporting={audioImporting} onChooseScore={() => scoreInput.current?.click()} onChooseAudio={() => audioInput.current?.click()}/>
     {importControls}
+    <div className="home-update">{updateControl}</div>
     {message && <div className="toast"><Check size={15}/>{message}</div>}
   </>
 
   return <div className="app-shell">
     <header className="topbar">
       <div className="topbar-left"><div className="brand"><div className="brand-mark"><Music2 size={17} strokeWidth={2.4} /></div><span>谱间</span><span className="brand-divider"/><span className="product-label">歌谱同步工作台</span></div><div className="highlight-mode-control" role="group" aria-label="文字高亮方式"><span>高亮</span><button type="button" aria-pressed={highlightMode === 'wipe'} title="播放时从左到右逐渐高亮文字" onClick={() => changeHighlightMode('wipe')}>从左到右</button><button type="button" aria-pressed={highlightMode === 'full'} title="乐句开始时整框高亮，直到下一句开始" onClick={() => changeHighlightMode('full')}>整框</button></div></div>
-      <div className="top-actions"><button className="icon-button" title="撤销（Ctrl+Z）" disabled={!undoHistory.current.length} onClick={undoProject}><Undo2 size={17}/></button><button className="icon-button" title="重做（Ctrl+Shift+Z）" disabled={!redoHistory.current.length} onClick={redoProject}><Redo2 size={17}/></button><span className="top-separator"/><button className="button button-primary" onClick={openExport}><Upload size={15}/>导出视频</button></div>
+      <div className="top-actions">{updateControl}<button className="icon-button" title="撤销（Ctrl+Z）" disabled={!undoHistory.current.length} onClick={undoProject}><Undo2 size={17}/></button><button className="icon-button" title="重做（Ctrl+Shift+Z）" disabled={!redoHistory.current.length} onClick={redoProject}><Redo2 size={17}/></button><span className="top-separator"/><button className="button button-primary" onClick={openExport}><Upload size={15}/>导出视频</button></div>
     </header>
     <div className="main-layout">
       <main className="workspace">

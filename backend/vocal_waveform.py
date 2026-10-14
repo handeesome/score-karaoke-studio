@@ -9,11 +9,16 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Callable
 
 from backend.waveform import waveform_for_audio
 from imageio_ffmpeg import get_ffmpeg_exe
+
+_generation_locks: dict[str, threading.Lock] = {}
+_locks_guard = threading.Lock()
 
 
 def separator_available() -> bool:
@@ -28,7 +33,27 @@ def cache_key(path: Path) -> str:
     return digest.hexdigest()[:24]
 
 
-def vocal_waveform_for_audio(path: Path, cache_root: Path, update: Callable[[str], None]) -> dict:
+def vocal_waveform_for_audio(path: Path, cache_root: Path, update: Callable[[str, dict], None]) -> dict:
+    work_dir = cache_root / cache_key(path)
+    with _locks_guard:
+        lock = _generation_locks.setdefault(str(work_dir.resolve()), threading.Lock())
+    if not lock.acquire(blocking=False):
+        update('正在复用进行中的人声分离', {'phase': 'waiting', 'progress': None})
+        while not lock.acquire(timeout=1):
+            try:
+                details = json.loads((work_dir / 'progress.json').read_text(encoding='utf-8'))
+                if details.get('stage'):
+                    update(details['stage'], {key: value for key, value in details.items()
+                                             if key not in ('stage', 'elapsedSeconds')})
+            except (OSError, ValueError):
+                pass
+    try:
+        return _generate_vocal_waveform(path, cache_root, update)
+    finally:
+        lock.release()
+
+
+def _generate_vocal_waveform(path: Path, cache_root: Path, update: Callable[[str, dict], None]) -> dict:
     work_dir = cache_root / cache_key(path)
     cached = work_dir / "waveform.json"
     if cached.is_file():
@@ -55,36 +80,56 @@ def vocal_waveform_for_audio(path: Path, cache_root: Path, update: Callable[[str
         environment["PATH"] = str(tools_dir) + os.pathsep + environment.get("PATH", "")
         from backend.runtime import local_demucs
         repo = local_demucs()
-        update("正在使用本地模型分离人声，CPU 处理可能需要几分钟" if repo else
-               "正在分离人声；首次运行会下载模型，CPU 处理可能需要几分钟")
-        worker = ([sys.executable, "--demucs"] if getattr(sys, "frozen", False)
-                  else [sys.executable, "-m", "demucs"])
+        update("正在加载人声模型" if repo else "正在准备人声模型，首次使用可能需要下载",
+               {"phase": "loading", "progress": None})
+        worker = ([sys.executable, "--separate-vocals"] if getattr(sys, "frozen", False)
+                  else [sys.executable, "-m", "backend.separation_worker"])
+        progress_file = work_dir / 'progress.json'
+        # Ignore status from an earlier failed/cancelled attempt.
+        progress_file.write_text('{}', encoding='utf-8')
         command = [
-            *worker, "--two-stems=vocals", "--other-method", "none",
-            "-n", "htdemucs", "-d", "cpu", "--segment", "7", "--overlap", "0.1",
-            "--mp3", "--mp3-bitrate", "192",
-            "--out", str(work_dir), str(path),
+            *worker, '--audio', str(path.resolve()), '--output', str(work_dir.resolve()),
+            '--progress-file', str(progress_file.resolve()),
         ]
         if repo:
             command.extend(["--repo", str(repo)])
-        try:
-            completed = subprocess.run(
-                command, env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, timeout=3600, check=False,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-        except subprocess.TimeoutExpired as error:
-            raise RuntimeError("人声分离超时；可检查电脑内存或换较短的音频") from error
-        if completed.returncode != 0:
-            details = (completed.stdout or "").strip().splitlines()
-            raise RuntimeError("人声分离失败：" + (details[-1] if details else "模型运行出错"))
+        started = time.monotonic()
+        latest = {}
+        with (work_dir / 'separation.log').open('a', encoding='utf-8') as log:
+            process = subprocess.Popen(command, env=environment, cwd=str(Path(__file__).resolve().parent.parent),
+                                       stdout=log, stderr=log, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            try:
+                while True:
+                    try:
+                        latest = json.loads(progress_file.read_text(encoding='utf-8'))
+                    except (OSError, ValueError):
+                        pass
+                    if latest:
+                        update(latest['stage'], {key: value for key, value in latest.items()
+                                                if key not in ('stage', 'elapsedSeconds')})
+                    code = process.poll()
+                    if code is not None:
+                        try:
+                            latest = json.loads(progress_file.read_text(encoding='utf-8'))
+                        except (OSError, ValueError):
+                            pass
+                        break
+                    if time.monotonic() - started > 3600:
+                        raise RuntimeError('人声分离超过一小时，已停止；请检查电脑内存或换较短的音频')
+                    time.sleep(1)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                process.wait()
+        if code != 0:
+            raise RuntimeError('人声分离失败：' + latest.get('error', f'请查看 {progress_file.with_suffix(".jsonl")}'))
 
         vocals = next((stem for stem in work_dir.glob("*/**/vocals.mp3") if stem.is_file() and stem.stat().st_size > 0), None)
     else:
-        update("已找到上次分离的人声，正在生成波形")
+        update("已找到上次分离的人声，正在生成波形", {"phase": "waveform", "progress": 98})
     if vocals is None:
         raise RuntimeError("分离完成，但没有找到人声音轨")
-    update("正在生成纯人声波形")
+    update("正在生成人声波形", {"phase": "waveform", "progress": 98})
     waveform = {**waveform_for_audio(str(vocals), vocals.stat().st_mtime_ns), "kind": "vocal-rms"}
     temporary = work_dir / "waveform.tmp"
     temporary.write_text(json.dumps(waveform, ensure_ascii=False), encoding="utf-8")
