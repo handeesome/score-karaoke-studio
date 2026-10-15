@@ -21,3 +21,16 @@ class PartitionDocumentTests(unittest.TestCase):
     def test_older_projects_do_not_require_guides(self):
         document = ProjectDocument.model_validate({'source': {}, 'pages': [], 'segments': []})
         self.assertEqual(document.partitions, [])
+
+    def test_merge_spare_times_and_intentionally_removed_timing_survive_save(self):
+        document = ProjectDocument.model_validate({
+            'source': {}, 'pages': [{'id': 'p1'}],
+            'segments': [{'id': 's7', 'pageId': 'p1', 'region': {'x': .1, 'y': .2, 'width': .8, 'height': .1},
+                          'startTime': 24, 'endTime': 28, 'timingSet': False}],
+            'flags': [], 'spareTimings': [{'startTime': 116, 'endTime': 120}],
+        })
+        restored = ProjectDocument.model_validate_json(document.model_dump_json())
+        self.assertFalse(restored.segments[0].timingSet)
+        self.assertEqual(restored.segments[0].startTime, 24)
+        self.assertEqual(restored.spareTimings[0].startTime, 116)
+        self.assertEqual(restored.spareTimings[0].endTime, 120)

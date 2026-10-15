@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { AlertTriangle, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Clock3, FileAudio2, FileImage, FileVideo2, Flag, ImagePlus, LoaderCircle, MoreHorizontal, Music2, Pause, Play, Redo2, RotateCcw, Scissors, Settings2, Sparkles, Undo2, Upload, WandSparkles, X, ZoomIn, ZoomOut } from 'lucide-react'
 import type { AutoBoxCandidate, AutoCandidate, ExportSettings, KaraokeFlag, Project, Region, ScorePage, Segment } from './types'
 import ExportDialog from './components/ExportDialog'
@@ -9,6 +9,11 @@ import ProgressDialog from './components/ProgressDialog'
 import HomeImportView from './components/HomeImportView'
 import DesktopUpdate from './components/DesktopUpdate'
 import PartitionEditor from './components/PartitionEditor'
+import ActionDialog, { type ActionNotice, type DialogAction } from './components/ActionDialog'
+import DisplaySize, { type TextSize } from './components/DisplaySize'
+import InspectorPanel from './components/InspectorPanel'
+import ToolMenu from './components/ToolMenu'
+import { connectFullTiming, editTiming, insertTiming, rebindAfterMerge, refreshTimingFlags, removeTiming, timedSegmentIds, type TimingEdge } from './timing'
 import { emptyPartition, removeGuide, syncPartition, type PartitionTool } from './partitions'
 import type { PagePartition } from './types'
 import { initialProject } from './types'
@@ -16,11 +21,20 @@ import { copyRegionToNextLine, loadInkPage } from './scoreInk'
 import { bindTimingToScoreOrder, calculateCameraTarget, calculateKaraokeProgress, fitRegion, formatTime, migrateLegacyCuts, recoverFlagsFromTiming, regionPositionKey, regionReveal, segmentRegions, sharedRegionKey } from './utils'
 
 const API = ''
+function savedDisplay() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('pujian-display') || '{}')
+    return { textSize: saved?.textSize, inspectorOpen: typeof saved?.inspectorOpen === 'boolean' ? saved.inspectorOpen : undefined }
+  } catch { return {} }
+}
 function App() {
+  const [textSize, setTextSize] = useState<TextSize>(() => savedDisplay().textSize === 'extra' ? 'extra' : 'large')
+  const [inspectorOpen, setInspectorOpen] = useState<boolean>(() => savedDisplay().inspectorOpen ?? window.innerWidth >= 1280)
+  const [pointFeedback, setPointFeedback] = useState<{ text: string; warning?: boolean } | null>(null)
   const [project, setProjectState] = useState<Project>(() => {
     try {
       const loaded = recoverFlagsFromTiming(migrateLegacyCuts({ ...initialProject, ...JSON.parse(localStorage.getItem('pujian-project') || '{}') }))
-      return loaded.scoreTimingBound ? loaded : bindTimingToScoreOrder(loaded)
+      return connectFullTiming(loaded.scoreTimingBound ? loaded : bindTimingToScoreOrder(loaded))
     } catch { return initialProject }
   })
   const [activePage, setActivePage] = useState(0)
@@ -33,12 +47,19 @@ function App() {
   const [duration, setDuration] = useState(0)
   const [time, setTime] = useState(0)
   const [playing, setPlaying] = useState(false)
-  const [message, setMessage] = useState('')
+  const [message, setMessage] = useState<{ text: string; action?: DialogAction } | null>(null)
+  const messageTimer = useRef<number>()
+  const [notice, setNotice] = useState<ActionNotice | null>(null)
+  const [saveIssue, setSaveIssue] = useState<'local' | 'project' | null>(null)
+  const localSaveFailed = useRef(false)
   const [exportOpen, setExportOpen] = useState(false)
   const [exportSettings, setExportSettings] = useState<ExportSettings>(initialProject.export!)
   const [previewTime, setPreviewTime] = useState(0)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [validation, setValidation] = useState<{ valid: boolean; errors: string[]; warnings: string[] } | null>(null)
+  const [validationError, setValidationError] = useState<string | null>(null)
+  const [previewError, setPreviewError] = useState(false)
+  const [previewRetry, setPreviewRetry] = useState(0)
   const [exportJob, setExportJob] = useState<{ jobId: string; status: string; progress: number; warnings?: string[]; downloadUrl?: string | null; error?: string } | null>(null)
   const [exportBusy, setExportBusy] = useState(false)
   const [resetOpen, setResetOpen] = useState(false)
@@ -59,6 +80,7 @@ function App() {
   const audioInput = useRef<HTMLInputElement>(null)
   const canvasRef = useRef<HTMLDivElement>(null)
   const pageRef = useRef<HTMLDivElement>(null)
+  const scoreZoomAnchor = useRef<{ page: HTMLElement; x: number; y: number; fractionX: number; fractionY: number } | null>(null)
   const previewUrlRef = useRef<string | null>(null)
   const numberInputRef = useRef<HTMLInputElement>(null)
   const cancelNumberEdit = useRef(false)
@@ -97,6 +119,7 @@ function App() {
     projectRef.current = previous
     lastHistoryAt.current = 0
     setProjectState(previous)
+    setPointFeedback(null)
   }
   const redoProject = () => {
     const next = redoHistory.current.pop()
@@ -105,21 +128,33 @@ function App() {
     projectRef.current = next
     lastHistoryAt.current = 0
     setProjectState(next)
+    setPointFeedback(null)
   }
 
-  useEffect(() => { localStorage.setItem('pujian-project', JSON.stringify(project)) }, [project])
+  useLayoutEffect(() => { document.documentElement.dataset.textSize = textSize }, [textSize])
+  useEffect(() => {
+    try { localStorage.setItem('pujian-display', JSON.stringify({ textSize, inspectorOpen })) } catch { /* Display choices do not affect project saving. */ }
+  }, [textSize, inspectorOpen])
+  useEffect(() => {
+    try { localStorage.setItem('pujian-project', JSON.stringify(project)); localSaveFailed.current = false; setSaveIssue(null) }
+    catch { localSaveFailed.current = true; setSaveIssue('local') }
+  }, [project])
   useEffect(() => { setOrderDraft(null) }, [selected])
+  useEffect(() => { setPointFeedback(null) }, [project.projectId, project.source.audioUrl])
   useEffect(() => { numberInputRef.current?.focus() }, [editingNumber?.id, editingNumber?.part])
   useEffect(() => {
-    const repaired = recoverFlagsFromTiming(project)
+    const repaired = connectFullTiming(recoverFlagsFromTiming(project))
     if (repaired !== project) setProject(repaired)
   }, [project])
   useEffect(() => {
     if (!project.projectId) return
+    let cancelled = false
     const timer = window.setTimeout(() => {
-      fetch(`${API}/api/projects/${project.projectId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(project) }).catch(() => {})
+      fetch(`${API}/api/projects/${project.projectId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(project) })
+        .then(response => { if (!response.ok) throw new Error('保存失败'); if (!cancelled && !localSaveFailed.current) setSaveIssue(null) })
+        .catch(() => { if (!cancelled) setSaveIssue(localSaveFailed.current ? 'local' : 'project') })
     }, 700)
-    return () => window.clearTimeout(timer)
+    return () => { cancelled = true; window.clearTimeout(timer) }
   }, [project])
   useEffect(() => () => { if (audioUrl) URL.revokeObjectURL(audioUrl) }, [audioUrl])
   useEffect(() => () => { if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current) }, [])
@@ -133,17 +168,26 @@ function App() {
   const needsFreshPartition = !pagePartition.horizontal.length && !pagePartition.vertical.length && project.segments.some(segment => segment.pageId === currentPage?.id && !segment.partitionKey)
   const partitionTool: PartitionTool = ['line-h', 'line-v', 'cell-cut', 'line-edit'].includes(tool) ? tool as PartitionTool : 'line-h'
   useEffect(() => {
-    if (highlightMode === 'full' && ['row', 'select', 'cut'].includes(tool)) setTool('line-h')
+    if (highlightMode === 'full' && ['row', 'select', 'cut'].includes(tool)) setTool(project.segments.length ? 'line-edit' : 'line-h')
     if (highlightMode === 'wipe' && !['row', 'select', 'cut'].includes(tool)) setTool('select')
   }, [highlightMode, tool])
   useEffect(() => { setSelectedLine(null) }, [activePage, highlightMode])
-  const changePartition = (partition: PagePartition) => {
+  const changePartition = (partition: PagePartition, reuseTimes = false) => {
     lastHistoryAt.current = 0
-    setProject(previous => syncPartition(previous, partition))
+    setProject(previous => {
+      const next = syncPartition(previous, partition)
+      return reuseTimes ? rebindAfterMerge(previous, next) : next
+    })
   }
   const deletePartitionLine = () => {
-    if (!selectedLine) return
-    changePartition(removeGuide(pagePartition, selectedLine)); setSelectedLine(null); selectOne(null)
+    if (playing) { explainPlaying(); return }
+    if (!selectedLine) { setNotice({ title: '先选中要删除的分隔线', description: '点击“选择分隔线”，再点击歌谱上的线。选中后即可删除。', primary: { label: '选择分隔线', onClick: () => setTool('line-edit') } }); return }
+    const axis = pagePartition.horizontal.some(line => line.id === selectedLine) ? pagePartition.horizontal : pagePartition.vertical
+    const ordered = [...axis].sort((a, b) => a.position - b.position)
+    const index = ordered.findIndex(line => line.id === selectedLine)
+    const internal = pagePartition.cuts.some(line => line.id === selectedLine) || (index > 0 && index < ordered.length - 1)
+    changePartition(removeGuide(pagePartition, selectedLine), internal); setSelectedLine(null); selectOne(null)
+    if (internal) flash('已合并分区，原有时间段按顺序保留；多出的末尾时间可继续使用', undoAction)
   }
   const activeSegment = useMemo(() => {
     const timed = project.segments.filter(segment => segment.timingSet || timedIds.has(segment.id))
@@ -160,18 +204,69 @@ function App() {
   const markedSegments = new Set(visibleFlags.filter(flag => flag.kind !== 'end').map(flag => flag.segmentId))
   const nextUnmarkedIndex = project.segments.findIndex(segment => !markedSegments.has(segment.id))
   const nextFlagLabel = nextUnmarkedIndex < 0 ? visibleFlags.some(flag => flag.kind === 'end') ? '完成' : '收尾' : String(nextUnmarkedIndex + 1).padStart(2, '0')
+  const nextFlagDescription = nextFlagLabel === '完成' ? '已全部完成' : nextFlagLabel === '收尾' ? '下一次：最后一句结束' : `下一次：第 ${Number(nextFlagLabel)} 句开始`
   const activeRegions = activeSegment ? segmentRegions(activeSegment) : []
   const activeReveal = highlightMode === 'full' ? activeRegions.map(() => 1) : regionReveal(activeRegions, progress)
   const unfinishedPart = activeReveal.findIndex(value => value < 1)
   const activePart = highlightMode === 'full' ? 0 : unfinishedPart >= 0 ? unfinishedPart : Math.max(0, activeRegions.length - 1)
   const fileName = (name: string | null) => name ? name.replace(/\.[^.]+$/, '') : null
-  const changeHighlightMode = (mode: 'wipe' | 'full') => setProject(current => ({
-    ...current, highlight: { ...current.highlight, mode },
-  }))
+  const changeHighlightMode = (mode: 'wipe' | 'full') => {
+    if (mode === 'full' && highlightMode !== 'full') {
+      const assigned = timedSegmentIds(project)
+      const gap = project.segments.findIndex(s => !assigned.has(s.id))
+      if (gap >= 0 && project.segments.slice(gap + 1).some(s => assigned.has(s.id))) {
+        setNotice({ title: '整框模式需要连续的乐句顺序', description: `第 ${gap + 1} 句还没有安排时间。切换后将移除从这里开始的后续时间，保留所有歌谱框，再从第 ${gap + 1} 句重新打点。前面的时间保持不变。`, closeLabel: '保留从左到右模式', primary: { label: `切换并从第 ${gap + 1} 句重新打点`, danger: true, onClick: () => {
+          lastHistoryAt.current = 0
+          setProject(p => removeTiming({ ...p, highlight: { ...p.highlight, mode } }, p.segments[gap].id))
+          flash('已切换整框模式，请从空缺的乐句重新打点', undoAction)
+        } } }); return
+      }
+      const timed = project.segments.filter(s => assigned.has(s.id))
+      const reversed = timed.findIndex((s, i) => i > 0 && s.startTime < timed[i - 1].startTime + .1)
+      if (reversed >= 0) { const segment = timed[reversed]; setNotice({ title: '先调整乐句的时间顺序', description: '整框模式需要后一句的开始时间晚于前一句。当前有乐句时间倒置或过于接近，请先调整，再切换。', primary: { label: '选择需要调整的乐句', onClick: () => selectOne(segment.id) } }); return }
+    }
+    setProject(current => connectFullTiming({ ...current, highlight: { ...current.highlight, mode } }))
+  }
   const changeZoom = (step: number) => setZoom(current => {
-    const automatic = (canvasRef.current?.clientWidth || window.innerWidth * .7) * .58 / 510
+    const automatic = (pageRef.current?.getBoundingClientRect().width || 510) / 510
     return Math.max(.45, Math.min(2.5, +((current ?? automatic) + step).toFixed(2)))
   })
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const wheelZoom = (event: WheelEvent) => {
+      const page = pageRef.current
+      if (!page || !(event.target instanceof Element) || !page.contains(event.target)) return
+      if (!event.deltaY || event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return
+      event.preventDefault()
+      // Keep drawing coordinates stable while a pointer is held down.
+      if (event.buttons || dragRef.current || draftRef.current || marqueeRef.current) return
+      const rect = page.getBoundingClientRect()
+      const pixels = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? canvas.clientHeight : 1)
+      const factor = Math.exp(-Math.max(-240, Math.min(240, pixels)) * .0015)
+      setZoom(previous => {
+        const current = previous ?? rect.width / 510
+        const next = Math.max(.45, Math.min(2.5, current * factor))
+        if (Math.abs(next - current) < .00001) return previous
+        scoreZoomAnchor.current = { page, x: event.clientX, y: event.clientY,
+          fractionX: (event.clientX - rect.left) / rect.width, fractionY: (event.clientY - rect.top) / rect.height }
+        return next
+      })
+    }
+    canvas.addEventListener('wheel', wheelZoom, { passive: false })
+    return () => canvas.removeEventListener('wheel', wheelZoom)
+  }, [currentPage?.id, project.source.pdf, project.source.audio, project.source.audioUrl])
+
+  useLayoutEffect(() => {
+    const anchor = scoreZoomAnchor.current
+    scoreZoomAnchor.current = null
+    const canvas = canvasRef.current, page = pageRef.current
+    if (!anchor || !canvas || page !== anchor.page) return
+    const rect = page.getBoundingClientRect()
+    canvas.scrollLeft += rect.left + anchor.fractionX * rect.width - anchor.x
+    canvas.scrollTop += rect.top + anchor.fractionY * rect.height - anchor.y
+  }, [zoom])
 
   useEffect(() => {
     if (!playing || !activeSegment || !canvasRef.current) return
@@ -201,7 +296,7 @@ function App() {
           const next = await response.json()
           if (cancelled) return
           setExportJob({ ...next, jobId: exportJob.jobId })
-          if (next.status === 'completed') { setExportBusy(false); flash('视频已导出完成'); return }
+          if (next.status === 'completed') { setExportBusy(false); flash('视频已生成完成', { label: '查看并保存视频', onClick: () => setExportOpen(true) }); return }
           if (next.status === 'failed') { setExportBusy(false); return }
         } catch (error) {
           if (!cancelled) { setExportJob(j => j ? { ...j, status: 'failed', error: error instanceof Error ? error.message : '导出状态读取失败' } : j); setExportBusy(false) }
@@ -219,17 +314,51 @@ function App() {
       const query = new URLSearchParams({ time: String(previewTime), width: String(exportSettings.width), height: String(exportSettings.height), scoreZoom: String(exportSettings.scoreZoom) })
       try {
         const response = await fetch(`${API}/api/projects/${project.projectId}/preview?${query}`, { signal: controller.signal })
-        if (!response.ok) return
+        if (!response.ok) throw new Error('预览生成失败')
         const nextUrl = URL.createObjectURL(await response.blob())
         if (controller.signal.aborted) { URL.revokeObjectURL(nextUrl); return }
         if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
-        previewUrlRef.current = nextUrl; setPreviewUrl(nextUrl)
-      } catch { /* the preview will retry when settings change */ }
+        previewUrlRef.current = nextUrl; setPreviewUrl(nextUrl); setPreviewError(false)
+      } catch { if (!controller.signal.aborted) setPreviewError(true) }
     }, 180)
     return () => { window.clearTimeout(timer); controller.abort() }
-  }, [exportOpen, project.projectId, previewTime, exportSettings.width, exportSettings.height, exportSettings.scoreZoom])
+  }, [exportOpen, project.projectId, previewTime, exportSettings.width, exportSettings.height, exportSettings.scoreZoom, previewRetry])
 
-  const flash = (text: string) => { setMessage(text); window.setTimeout(() => setMessage(''), 2400) }
+  useEffect(() => () => window.clearTimeout(messageTimer.current), [])
+  const flash = (text: string, action?: DialogAction) => {
+    window.clearTimeout(messageTimer.current)
+    setMessage({ text, action })
+    messageTimer.current = window.setTimeout(() => setMessage(null), action ? 15000 : 7000)
+  }
+  const undoAction = { label: '撤销上一步', onClick: () => { undoProject(); setMessage(null) } }
+  const fail = (title: string, description: string, error: unknown, primary?: DialogAction, secondary?: DialogAction) => setNotice({
+    title, description, tone: 'error', details: error instanceof Error ? error.message : String(error || ''), primary, secondary,
+  })
+  const chooseScore = () => {
+    if (project.segments.length || project.partitions?.some(p => p.horizontal.length || p.vertical.length)) {
+      setNotice({ title: '更换歌谱会清空现有标注', description: `新歌谱导入成功后，将清空这首歌所有页面的分隔线、${project.segments.length} 条乐句和已有打点。音频会保留。取消选择文件不会改变当前项目。`, closeLabel: '保留当前歌谱', primary: { label: '继续选择新歌谱', danger: true, onClick: () => scoreInput.current?.click() } })
+    } else scoreInput.current?.click()
+  }
+  const chooseAudio = () => {
+    if (project.source.audio && project.segments.some(s => s.timingSet || timedIds.has(s.id))) {
+      setNotice({ title: '更换音频后需要重新设置时间', description: '新音频导入成功后，会清空已有打点和乐句时间。歌谱和分区会保留。取消选择文件不会改变当前项目。', closeLabel: '保留当前音频', primary: { label: '继续选择新音频', danger: true, onClick: () => audioInput.current?.click() } })
+    } else audioInput.current?.click()
+  }
+  const explainPlaying = () => setNotice({ title: '先暂停播放，再修改分区', description: '暂停后可以画线、选择分区或删除分隔线。', primary: { label: '暂停播放', onClick: () => { audioRef.current?.pause(); setPlaying(false) } } })
+  const explainPartitionConflict = (nextTool: PartitionTool = 'line-h') => setNotice({
+    title: '先重新分区，才能全局画线',
+    description: `当前页使用的是已有标注框。重新分区将清空这首歌所有页面的分隔线、${project.segments.length} 条乐句和 ${(project.flags || []).length} 个打点。歌谱与音频会保留。\n想保留现有框，可以继续使用“框内竖切”。`,
+    closeLabel: '保留现有标注',
+    primary: { label: '清空并重新分区', danger: true, onClick: () => { resetAnnotations(); setTool(nextTool) } },
+    secondary: { label: '使用框内竖切', onClick: () => setTool('cell-cut') },
+  })
+  const requestPartitionTool = (nextTool: PartitionTool) => {
+    if (playing) { explainPlaying(); return }
+    if (needsFreshPartition && (nextTool === 'line-h' || nextTool === 'line-v')) { explainPartitionConflict(nextTool); return }
+    setTool(nextTool)
+  }
+  const chooseRegions = () => { setTool('select') }
+  const beginRegions = () => { setTool(highlightMode === 'full' ? 'line-h' : 'row') }
   const selectOne = (id: string | null) => { setSelectedLine(null); setSelected(id); setSelectedIds(id ? [id] : []); setMergeTarget(null); setOrderDraft(null) }
   const selectSegment = (id: string, additive: boolean) => {
     if (!additive) { selectOne(id); return }
@@ -239,7 +368,7 @@ function App() {
   const moveSegmentTo = (id: string, positionText: string) => {
     const position = Number(positionText)
     if (!/^\d+$/.test(positionText) || !Number.isInteger(position) || position < 1 || position > project.segments.length) {
-      flash(`请输入 1 到 ${project.segments.length} 的乐句序号`)
+      setNotice({ title: '乐句序号不在可用范围内', description: `请输入 1 到 ${project.segments.length} 的整数，再点击“移动到此”。`, primary: { label: '修改序号', onClick: () => document.getElementById('phrase-order')?.focus() } })
       return
     }
     const from = project.segments.findIndex(segment => segment.id === id)
@@ -255,11 +384,61 @@ function App() {
     setOrderDraft(null)
     flash(`已移到乐句 ${String(position).padStart(2, '0')}；原有时间和打点按序号保留`)
   }
-  const updateSegment = (id: string, patch: Partial<Segment>) => setProject(p => {
+  const updateSegment = (id: string, patch: Partial<Segment>) => {
     const changedTime = patch.startTime !== undefined || patch.endTime !== undefined
-    const next = { ...p, segments: p.segments.map(s => s.id === id ? { ...s, ...patch, ...(changedTime ? { timingSet: true } : {}) } : s) }
-    return next
-  })
+    const current = projectRef.current
+    const assigned = timedSegmentIds(current)
+    if (changedTime && current.highlight.mode === 'full' && !assigned.has(id)) {
+      const first = current.segments.find(s => !assigned.has(s.id))
+      if (first && first.id !== id) { setNotice({ title: '整框模式需要按顺序设置时间', description: `请先从第 ${current.segments.indexOf(first) + 1} 句开始打点，再继续后面的乐句。`, primary: { label: '选择下一句待打点乐句', onClick: () => selectOne(first.id) } }); return false }
+    }
+    setProject(p => {
+      const source = p.segments.find(s => s.id === id)
+      if (!source) return p
+      if (changedTime && timedSegmentIds(p).has(id)) return editTiming(p, id, patch.startTime ?? source.startTime, patch.endTime ?? source.endTime,
+        patch.startTime !== undefined && patch.endTime !== undefined ? 'both' : patch.startTime !== undefined ? 'start' : 'end', duration || p.audioDuration || 0)
+      const next = { ...p, segments: p.segments.map(s => s.id === id ? { ...s, ...patch, ...(changedTime ? { timingSet: true } : {}) } : s) }
+      return changedTime ? connectFullTiming(refreshTimingFlags(next)) : next
+    })
+    return true
+  }
+  const commitTime = (segment: Segment, field: 'startTime' | 'endTime', value: number) => {
+    const end = duration || project.audioDuration || 0
+    let reason = ''
+    if (!Number.isFinite(value) || value < 0 || (end > 0 && value > end)) reason = `时间需要在 00:00.000 到 ${formatTime(end)} 之间。`
+    else if (field === 'startTime' ? value >= segment.endTime : value <= segment.startTime) reason = '结束时间必须晚于开始时间。请先调整相应的开始或结束时间。'
+    if (reason) { setNotice({ title: '这个时间不能使用', description: reason, primary: { label: '返回修改时间', onClick: () => document.querySelector<HTMLButtonElement>(`[data-segment-id="${segment.id}"]`)?.focus() } }); return false }
+    return updateSegment(segment.id, { [field]: value })
+  }
+  const moveTimelineSegment = (id: string, start: number, end: number, edge: TimingEdge) => {
+    lastHistoryAt.current = 0
+    setProject(p => editTiming(p, id, start, end, edge, duration || p.audioDuration || 0))
+  }
+  const deleteTimelineSegment = (id: string) => {
+    const index = project.segments.findIndex(s => s.id === id)
+    if (index < 0) return
+    const full = highlightMode === 'full'
+    const assigned = timedSegmentIds(project)
+    const count = project.segments.filter((s, i) => assigned.has(s.id) && (full ? i >= index : s.id === id)).length
+    setNotice({ title: full ? `从第 ${index + 1} 句开始重新打点？` : `移除第 ${index + 1} 句的时间？`,
+      description: full ? `将移除第 ${index + 1} 句及后面已放入时间轴的 ${count} 条乐句时间，需要从这里重新打点。所有歌谱框和编号都会保留，前面的时间保持不变。`
+        : `只移除时间轴上的第 ${index + 1} 句，保留对应歌谱框和编号。后面的乐句不移动，这里会留下空位，可之后重新插入。`,
+      closeLabel: '保留现有时间', primary: { label: full ? '移除这些时间，重新打点' : '只移除这句时间', danger: true, onClick: () => {
+        audioRef.current?.pause(); setPlaying(false); lastHistoryAt.current = 0
+        setProject(p => removeTiming(p, id)); selectOne(id)
+        flash(full ? `已移除第 ${index + 1} 句及后面的时间，歌谱框已保留` : `第 ${index + 1} 句已从时间轴移除，歌谱框已保留`, undoAction)
+      } },
+    })
+  }
+  const insertTimelineSegment = (id: string, at: number) => {
+    if (highlightMode === 'full') {
+      const next = project.segments.find(s => !timedSegmentIds(project).has(s.id))
+      if (next?.id !== id) { setNotice({ title: '整框模式需要按顺序放入乐句', description: '请先选择下一条待打点的乐句，再放入未分配时间。', primary: next ? { label: '选择下一句', onClick: () => selectOne(next.id) } : undefined }); return }
+    }
+    lastHistoryAt.current = 0
+    setProject(p => insertTiming(p, id, at, duration || p.audioDuration || 0))
+    flash('已把选中的乐句放入时间轴，其他乐句的位置保持不变', undoAction)
+  }
   const updateSegmentRegion = (id: string, part: number, region: Region) => setProject(p => {
     const source = p.segments.find(segment => segment.id === id)
     const sourcePart = source && segmentRegions(source)[part]
@@ -278,7 +457,7 @@ function App() {
       const partition = project.partitions?.find(item => item.pageId === source.pageId)
       if (partition) changePartition({ ...partition, excluded: [...partition.excluded, source.partitionKey] })
       selectOne(null)
-      flash('该分区已跳过；用“调整分隔线”点击空白区可恢复')
+      flash('已跳过这个分区', undoAction)
       return
     }
     setProject(p => {
@@ -288,7 +467,7 @@ function App() {
       return { ...p, segments, flags }
     })
     selectOne(null); setTool('select')
-    flash('标注已删除；其余乐句的打点已保留，可按 Ctrl+Z 撤销')
+    flash('已删除标注，其余乐句的打点已保留', undoAction)
   }
   const onScore = async (selection?: FileList | null) => {
     const files = Array.from(selection || [])
@@ -307,10 +486,10 @@ function App() {
       audioRef.current?.pause()
       if (audioRef.current) audioRef.current.currentTime = 0
       const scoreName = data.filename.replace(/\.[^.]+$/, '')
-      setProject(p => ({ ...p, projectId: data.projectId, projectName: scoreName, source: { ...p.source, pdf: files.length > 1 ? `${scoreName} 等 ${files.length} 张` : data.filename }, pages, segments: [], flags: [], partitions: [] }))
+      setProject(p => ({ ...p, projectId: data.projectId, projectName: scoreName, source: { ...p.source, pdf: files.length > 1 ? `${scoreName} 等 ${files.length} 张` : data.filename }, pages, segments: [], flags: [], partitions: [], spareTimings: [] }))
       setActivePage(0); selectOne(null); setTime(0); setPlaying(false); setTool('row')
       flash(replacing ? '已替换乐谱，原有标注已清空' : `已导入 ${pages.length} 页乐谱`)
-    } catch (error) { flash(error instanceof Error ? error.message : '无法连接渲染服务，请先启动后端') }
+    } catch (error) { fail('歌谱没有导入成功', '请重新选择 PDF 或歌谱图片。若仍失败，请关闭软件后重新打开再试。', error, { label: '重新选择歌谱', onClick: () => scoreInput.current?.click() }) }
     finally { setScoreImporting(false) }
   }
   const onAudio = async (file?: File) => {
@@ -325,62 +504,76 @@ function App() {
       const url = URL.createObjectURL(file)
       audioRef.current?.pause()
       setAudioUrl(url)
-      setProject(p => ({ ...p, source: { ...p.source, audio: file.name, audioUrl: data.url }, audioDuration: data.duration || null, flags: [], segments: p.segments.map((segment, index) => ({ ...segment, startTime: index * 4, endTime: (index + 1) * 4, timingSet: false })) }))
+      setProject(p => ({ ...p, source: { ...p.source, audio: file.name, audioUrl: data.url }, audioDuration: data.duration || null, flags: [], spareTimings: [], segments: p.segments.map((segment, index) => ({ ...segment, startTime: index * 4, endTime: (index + 1) * 4, timingSet: false })) }))
       selectOne(null); setTime(0); setDuration(data.duration || 0); setPlaying(false)
       if (audioRef.current) { audioRef.current.src = url; audioRef.current.load() }
       flash(replacing ? '已替换音频，请重新打点校准时间' : '音频已载入，可以开始播放')
-    } catch (error) { flash(error instanceof Error ? error.message : '音频导入失败，请重试') }
+    } catch (error) { fail('音频没有导入成功', '请重新选择 MP3、WAV、M4A 或 OGG 音频。', error, { label: '重新选择音频', onClick: () => audioInput.current?.click() }) }
     finally { setAudioImporting(false) }
   }
-  const togglePlay = () => { const el = audioRef.current; if (!el) { flash('请先导入 MP3 音频'); return }; if (el.paused) { void el.play(); setPlaying(true) } else { el.pause(); setPlaying(false) } }
+  const playAudio = (at?: number) => {
+    const el = audioRef.current
+    if (!el || !project.source.audio) { setNotice({ title: '先添加音频，才能播放', description: '选择这首歌对应的音频文件。', primary: { label: '选择音频', onClick: chooseAudio } }); return }
+    if (at !== undefined) seek(at)
+    void el.play().then(() => setPlaying(true)).catch(error => {
+      setPlaying(false)
+      fail('音频暂时无法播放', '可以重新选择原来的音频文件。更换音频前会提示是否清除已有时间。', error, { label: '重新选择音频', onClick: chooseAudio })
+    })
+  }
+  const togglePlay = () => { const el = audioRef.current; if (el && !el.paused) { el.pause(); setPlaying(false) } else playAudio() }
   const seek = (next: number) => { const el = audioRef.current; if (!el) return; el.currentTime = Math.max(0, Math.min(duration || 0, next)); setTime(el.currentTime) }
   const addFlag = () => {
     const at = audioRef.current?.currentTime ?? time
-    const ordered = project.segments
-    const flags = visibleFlags
-    if (!audioRef.current || !project.source.audio) { flash('请先导入音频'); return }
-    if (!ordered.length) { flash('先为乐句放好标注区域'); return }
-    if (flags.some(flag => flag.kind === 'end') && nextUnmarkedIndex < 0) { flash('所有乐句都已打点完成'); return }
-
-    const nextFlags: KaraokeFlag[] = flags.filter(flag => flag.kind !== 'end').map(flag => ({ ...flag }))
+    const ordered = project.segments, flags = visibleFlags
+    const report = (text: string, warning = false) => setPointFeedback({ text, warning })
+    if (!audioRef.current || !project.source.audio) { report('请先选择音频，再打点。', true); return }
+    if (!ordered.length) { report('请先在歌谱上划分歌词，再打点。', true); return }
+    if (flags.some(flag => flag.kind === 'end') && nextUnmarkedIndex < 0) { report('全部打点已完成，可以继续试听或导出视频。'); return }
     const index = nextUnmarkedIndex < 0 ? ordered.length : nextUnmarkedIndex
     const following = ordered.slice(index + 1).find(segment => markedSegments.has(segment.id))
-    if (following && at >= following.startTime) { flash('这个时间已晚于后面已打点的乐句，请先定位到正确位置'); return }
+    const audioEnd = duration || project.audioDuration || 0
+    if (index < ordered.length && audioEnd > 0 && at > audioEnd - .1) { report('已经到音频结尾，本次未记录。请回到这一句开始的位置再打点。', true); return }
+    if (highlightMode === 'full' && following && at >= following.startTime) { report('当前位置晚于后面已有的打点，本次未记录。请在时间轴上回到这一句的位置再打点。', true); return }
+    const previous = ordered[index - 1]
+    if (previous && Math.abs(at - previous.startTime) < .1) { report('两次打点太接近，本次未记录。继续播放，唱到下一句时再打点。', true); return }
+    if (highlightMode === 'full' && previous && at <= previous.startTime) { report(`当前位置太早，本次未记录。继续播放，唱到第 ${index + 1} 句时再打点。`, true); return }
+    const provisionalEnd = (oldEnd: number) => Math.min(audioEnd > 0 ? audioEnd : Infinity, Math.max(oldEnd, at + 1))
+    const nextFlags: KaraokeFlag[] = flags.filter(flag => flag.kind !== 'end').map(flag => ({ ...flag }))
     if (index === 0) {
       const first = ordered[0]
       nextFlags.forEach(flag => { if (flag.kind === 'start') flag.kind = 'transition' })
-      nextFlags.unshift({ id: `flag-${Date.now()}`, time: at, segmentId: first.id, kind: 'start' })
-      setProject(p => ({ ...p, flags: nextFlags, segments: p.segments.map((s, i) => i === 0 ? { ...s, startTime: at, endTime: Math.max(s.endTime, at + 1), timingSet: true } : s) }))
+      nextFlags.unshift({ id: `flag-${crypto.randomUUID()}`, time: at, segmentId: first.id, kind: 'start' })
+      setProject(p => ({ ...p, flags: nextFlags, segments: p.segments.map((s, i) => i === 0 ? { ...s, startTime: at, endTime: provisionalEnd(s.endTime), timingSet: true } : s) }))
       selectOne(first.id)
       const pageIndex = project.pages.findIndex(page => page.id === first.pageId); if (pageIndex >= 0) setActivePage(pageIndex)
-      flash(`已打点 ${formatTime(at)} · 第 1 句开始`)
+      report(`已打点 ${formatTime(at)} · 第 1 句开始`)
       return
     }
-
-    const previous = ordered[index - 1]
-    if (!previous || at <= previous.startTime) { flash('这个标记早于当前乐句的开始位置'); return }
+    if (!previous) return
     const next = ordered[index]
-    const keepPreviousEnd = following != null || flags.some(flag => flag.segmentId === previous.id && (flag.kind === 'end' || flag.id.startsWith('recovered-')))
-    nextFlags.push({ id: `flag-${Date.now()}`, time: at, segmentId: next?.id || previous.id, kind: next ? 'transition' : 'end' })
+    const keepPreviousEnd = highlightMode === 'wipe' && (following != null || at <= previous.startTime || flags.some(flag => flag.segmentId === previous.id && (flag.kind === 'end' || flag.id.startsWith('recovered-'))))
+    nextFlags.push({ id: `flag-${crypto.randomUUID()}`, time: at, segmentId: next?.id || previous.id, kind: next ? 'transition' : 'end' })
     nextFlags.sort((a, b) => a.time - b.time)
-    setProject(p => ({
-      ...p,
-      flags: nextFlags,
-      segments: p.segments.map((s, i) => i === index - 1
-        ? keepPreviousEnd ? s : { ...s, endTime: at }
-        : i === index ? { ...s, startTime: at, endTime: Math.max(s.endTime, at + 1), timingSet: true } : s),
+    setProject(p => ({ ...p, flags: nextFlags, segments: p.segments.map((s, i) => i === index - 1
+      ? keepPreviousEnd ? s : { ...s, endTime: at }
+      : i === index ? { ...s, startTime: at, endTime: provisionalEnd(s.endTime), timingSet: true } : s),
     }))
     if (next) {
       selectOne(next.id)
       const pageIndex = project.pages.findIndex(page => page.id === next.pageId); if (pageIndex >= 0) setActivePage(pageIndex)
-      flash(`已打点 ${formatTime(at)} · 第 ${index + 1} 句开始`)
-    } else flash(`已打点 ${formatTime(at)} · 最后一句结束`)
+      report(`已打点 ${formatTime(at)} · 第 ${index + 1} 句开始`)
+    } else report(`已打点 ${formatTime(at)} · 最后一句结束`)
   }
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (!project.pages.length || !project.source.pdf || !project.source.audio || !project.source.audioUrl) return
-      if (resetOpen || autoCandidates || boxCandidates || exportOpen) { if (event.key === 'Escape') { setResetOpen(false); setAutoCandidates(null); setBoxCandidates(null) }; return }
+      if (notice) return
+      if (document.querySelector('[aria-modal="true"]')) {
+        if (event.key === 'Escape' && !analysisProgress && !document.querySelector('.action-dialog, .desktop-update .modal-backdrop')) { setAutoCandidates(null); setBoxCandidates(null); setExportOpen(false) }
+        return
+      }
+      if (event.target instanceof HTMLElement && event.target.closest('button, a, summary')) return
       const target = event.target as HTMLElement
       if (target?.matches('input, textarea, select') || target?.isContentEditable) return
       if (event.code === 'Space') { event.preventDefault(); togglePlay() }
@@ -389,7 +582,7 @@ function App() {
       if (event.key === 'Enter') { event.preventDefault(); addFlag() }
       if (event.key === 'ArrowLeft') { event.preventDefault(); seek(time - (event.shiftKey ? 1 : .1)) }
       if (event.key === 'ArrowRight') { event.preventDefault(); seek(time + (event.shiftKey ? 1 : .1)) }
-      if (event.key.toLowerCase() === 'n') setTool(highlightMode === 'full' ? 'line-h' : 'row')
+      if (event.key.toLowerCase() === 'n') { if (highlightMode === 'full') requestPartitionTool('line-h'); else setTool('row') }
       if (event.key.toLowerCase() === 'd' && selected && highlightMode !== 'full') { event.preventDefault(); void duplicateBelow() }
       if ((event.key === 'Delete' || event.key === 'Backspace') && (selected || selectedLine) && !event.ctrlKey && !event.altKey && !event.metaKey && !event.repeat) {
         event.preventDefault()
@@ -400,42 +593,41 @@ function App() {
       if (event.key.toLowerCase() === 'e' && selected) updateSegment(selected, { endTime: time })
     }
     window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey)
-  }, [time, selected, selectedIds, selectedLine, duration, project, resetOpen, autoCandidates, boxCandidates, exportOpen])
+  }, [time, selected, selectedIds, selectedLine, duration, project, resetOpen, autoCandidates, boxCandidates, exportOpen, notice, playing, analysisProgress])
 
   function resetAnnotations() {
     if (audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0 }
     lastHistoryAt.current = 0
-    setProject(p => ({ ...p, segments: [], flags: [], partitions: [] }))
+    setProject(p => ({ ...p, segments: [], flags: [], partitions: [], spareTimings: [] }))
     setSelectedLine(null)
-    selectOne(null); setActivePage(0); setTime(0); setTool(project.pages.length ? 'row' : 'select')
+    selectOne(null); setActivePage(0); setTime(0); setPlaying(false); setTool(highlightMode === 'full' ? 'line-h' : project.pages.length ? 'row' : 'select')
     setResetOpen(false)
-    flash('标注已清空，可按 Ctrl+Z 恢复')
+    flash('已清空标注，歌谱与音频已保留', undoAction)
   }
 
   function createSegment(region: Region) {
-    if (!currentPage) { flash('请先导入乐谱'); return }
+    if (!currentPage) { setNotice({ title: '先添加歌谱，才能画框', description: '选择 PDF 或歌谱图片后，即可划分歌词。', primary: { label: '选择歌谱', onClick: chooseScore } }); return }
     const id = `segment-${Date.now()}`
     const next: Segment = { id, pageId: currentPage.id, region: fitRegion(region), startTime: time, endTime: Math.min(duration || time + 4, time + 4), direction: 'left-to-right' }
     setProject(p => ({ ...p, segments: [...p.segments, next] })); selectOne(id); setTool('row')
   }
   const mergeSegments = (selectedSegmentIds: string[]) => {
     const picked = project.segments.filter(segment => selectedSegmentIds.includes(segment.id))
-    if (picked.some(segment => segment.partitionKey)) { flash('直线分区请在整框模式下删除分隔线来合并'); return }
-    if (picked.length < 2) { flash('请先框选至少两条乐句'); return }
+    if (picked.some(segment => segment.partitionKey)) { setNotice({ title: '这些分区需要通过分隔线合并', description: '切换到整框高亮，选中两个分区之间的分隔线，再点击“删除分隔线”。', primary: { label: '去调整分隔线', onClick: () => { changeHighlightMode('full'); setTool('line-edit') } } }); return }
+    if (picked.length < 2) { setNotice({ title: '先选中至少两条乐句', description: '点击“选择乐句”，在歌谱上拖出一个范围，选中相邻的歌词框，再点击“合并乐句”。', primary: { label: '选择乐句', onClick: chooseRegions } }); return }
     const firstIndex = project.segments.findIndex(segment => segment.id === picked[0].id)
     const contiguous = picked.every((segment, index) => project.segments[firstIndex + index]?.id === segment.id)
-    if (!contiguous) { flash('请选中相邻的乐句再合并'); return }
+    if (!contiguous) { setNotice({ title: '只能合并顺序相邻的乐句', description: '当前选择跳过了中间的乐句。请重新选中相邻的歌词框，再进行合并。', primary: { label: '重新选择乐句', onClick: () => { selectOne(null); chooseRegions() } } }); return }
     const regions = picked.flatMap(segmentRegions)
     const merged: Segment = { ...picked[0], pageId: regions[0].pageId, region: regions[0].region, regions,
       startTime: Math.min(...picked.map(segment => segment.startTime)), endTime: Math.max(...picked.map(segment => segment.endTime)) }
     const ids = new Set(picked.map(segment => segment.id))
-    setProject(previous => ({ ...previous,
+    lastHistoryAt.current = 0
+    setProject(previous => rebindAfterMerge(previous, { ...previous,
       segments: previous.segments.flatMap(segment => segment.id === merged.id ? [merged] : ids.has(segment.id) ? [] : [segment]),
-      flags: previous.flags?.filter(flag => flag.kind !== 'transition' || !ids.has(flag.segmentId) || flag.segmentId === merged.id)
-        .map(flag => ids.has(flag.segmentId) ? { ...flag, segmentId: merged.id } : flag),
     }))
     selectOne(merged.id); setTool('select')
-    flash(`已合并为乐句 ${String(firstIndex + 1).padStart(2, '0')}`)
+    flash(`已合并为乐句 ${String(firstIndex + 1).padStart(2, '0')}，后面的乐句已依次接上原时间段`, undoAction)
   }
   const mergeSelected = () => mergeSegments(selectedIds)
   const reverseSegmentRegions = (id: string) => {
@@ -451,7 +643,7 @@ function App() {
   }
   const repeatSelectedRegions = () => {
     const sources = project.segments.filter(segment => selectedIds.includes(segment.id))
-    if (!sources.length) { flash('先选中要重复使用的歌词框'); return }
+    if (!sources.length) { setNotice({ title: '先选中要重复使用的歌词框', description: '选择歌词框后，再点击“重复使用选中框”。', primary: { label: '选择歌词框', onClick: chooseRegions } }); return }
     const assignedIds = new Set((project.flags || []).filter(flag => flag.kind !== 'end').map(flag => flag.segmentId))
     const lastAssignedEnd = Math.max(0, ...project.segments.filter(segment => segment.timingSet || assignedIds.has(segment.id)).map(segment => segment.endTime))
     const audioEnd = duration || project.audioDuration || lastAssignedEnd + sources.length * 1.1 + 2
@@ -470,7 +662,7 @@ function App() {
   const duplicateBelow = async () => {
     if (duplicateBusy) return
     const sources = project.segments.filter(segment => selectedIds.includes(segment.id))
-    if (!sources.length) { flash('先选中要复制的标注'); return }
+    if (!sources.length) { setNotice({ title: '先选中要复制的歌词框', description: '点击“选择歌词框”，再在歌谱上点选一个框。选中后点击“复制到下一行”。', primary: { label: '选择歌词框', onClick: chooseRegions } }); return }
     setDuplicateBusy(true)
     const pageImages = new Map<string, ReturnType<typeof loadInkPage>>()
     const copyRegions: { pageId: string; region: Region }[][] = []
@@ -485,7 +677,7 @@ function App() {
           const region = copyRegionToNextLine(inkPage, part.region)
           if (!region) {
             const number = project.segments.indexOf(source) + 1
-            flash(`乐句 ${String(number).padStart(2, '0')} 下方没有识别到下一行文字`)
+            setNotice({ title: '没有找到可以复制到的下一行', description: `第 ${number} 句下方没有识别到歌词。可以手动画出下一行的歌词框。`, primary: { label: '手动画歌词框', onClick: () => setTool('row') } })
             return
           }
           regions.push({ pageId: part.pageId, region })
@@ -493,7 +685,7 @@ function App() {
         copyRegions.push(regions)
       }
     } catch {
-      flash('读取乐谱图片失败，请确认图片仍可打开')
+      fail('暂时无法复制歌词框', '乐谱图片读取失败。可以重试；若仍失败，请重新选择歌谱。', '', { label: '重试复制', onClick: () => { void duplicateBelow() } })
       return
     } finally {
       setDuplicateBusy(false)
@@ -519,13 +711,13 @@ function App() {
     flash(sources.length > 1 ? `已复制 ${copies.length} 个标注到下一行；新乐句待打点` : '已复制标注到下一行')
   }
   const splitSegment = (segment: Segment, part: number, event: React.PointerEvent<SVGGElement>) => {
-    if (segment.partitionKey) { flash('请在整框模式下使用框内竖切'); return }
-    if (part !== 0 || segmentRegions(segment).length > 1) { flash('合并的乐句包含多个框，请先调整各框位置'); return }
+    if (segment.partitionKey) { setNotice({ title: '这个分区需要使用“框内竖切”', description: '切换到整框高亮后，点击分区内部即可切开这一行。', primary: { label: '使用框内竖切', onClick: () => { changeHighlightMode('full'); setTool('cell-cut') } } }); return }
+    if (part !== 0 || segmentRegions(segment).length > 1) { setNotice({ title: '暂时不能竖切包含多个框的乐句', description: '可以先调整已有框的位置，或另外画一个独立歌词框。', primary: { label: '调整已有框', onClick: chooseRegions }, secondary: { label: '画独立歌词框', onClick: () => setTool('row') } }); return }
     const rect = pageRef.current!.getBoundingClientRect()
     const pageX = (event.clientX - rect.left) / rect.width
     const position = (pageX - segment.region.x) / segment.region.width
     const minimum = Math.max(.03, 12 / (rect.width * segment.region.width))
-    if (position <= minimum || position >= 1 - minimum) { flash('请点在框内，离左右边缘稍远一些'); return }
+    if (position <= minimum || position >= 1 - minimum) { setNotice({ title: '点击位置离边线太近', description: '请回到歌词框内部，在离左右边线稍远的位置点击。', closeLabel: '返回框内重试' }); return }
     const rightId = `segment-${Date.now()}-${Math.round(pageX * 1000)}`
     setProject(previous => {
       const index = previous.segments.findIndex(item => item.id === segment.id)
@@ -559,8 +751,20 @@ function App() {
       if (!response.ok) throw new Error('当前编辑内容暂存失败')
     }
   }
+  const retrySave = async () => {
+    let localSaved = false
+    try {
+      localStorage.setItem('pujian-project', JSON.stringify(projectRef.current)); localSaved = true; localSaveFailed.current = false
+      await persistProject(projectRef.current)
+      setSaveIssue(null); flash('当前更改已保存')
+    } catch (error) {
+      setSaveIssue(localSaved ? 'project' : 'local')
+      fail('本次保存没有完成', localSaved ? '当前更改已保存在本机，但项目文件暂时没有保存成功。可以重试保存。' : '当前更改尚未保存。请先重试保存，暂时不要关闭软件。', error, { label: '重试保存', onClick: () => { void retrySave() } })
+    }
+  }
   const startAutoBoxes = async () => {
-    if (!project.pages.length || boxBusy) return
+    if (boxBusy) return
+    if (!project.pages.length) { setNotice({ title: '先添加歌谱，才能自动框选', description: '选择 PDF 或歌谱图片后，再查找歌词框。', primary: { label: '选择歌谱', onClick: chooseScore } }); return }
     setBoxBusy(true)
     setAnalysisProgress({ kind: 'boxes', percent: 0, stage: '正在准备乐谱' })
     const projectId = project.projectId
@@ -578,7 +782,7 @@ function App() {
         if (status.status === 'failed') throw new Error(status.error || '自动框选失败')
         if (status.status === 'completed') { setBoxCandidates(status.candidates || []); return }
       }
-    } catch (error) { flash(error instanceof Error ? error.message : '自动框选失败') }
+    } catch (error) { fail('自动框选没有完成', '可以重试识别，也可以直接手动画出歌词框。', error, { label: '重试自动框选', onClick: () => { void startAutoBoxes() } }, { label: '手动画歌词框', onClick: () => setTool('row') }) }
     finally { setBoxBusy(false); setAnalysisProgress(null) }
   }
   const applyAutoBoxes = (indices: number[], replace: boolean) => {
@@ -602,13 +806,14 @@ function App() {
       const segments = !replace && previous.flags?.length
         ? [...existing, ...ordered.filter(segment => !used.has(segment.id))]
         : [...ordered, ...unmatched]
-      return { ...previous, segments, flags: replace ? [] : previous.flags }
+      return { ...previous, segments, flags: replace ? [] : previous.flags, partitions: replace ? [] : previous.partitions, spareTimings: replace ? [] : previous.spareTimings }
     })
     setBoxCandidates(null); selectOne(null); setTool('select')
-    flash(`已应用 ${chosen.length} 个候选框；新标注时间可用打点校准`)
+    flash(`已应用 ${chosen.length} 个候选框；新标注时间可用打点校准`, undoAction)
   }
   const startAutoAlign = async () => {
-    if (!project.projectId || !project.pages.length || !project.source.audioUrl) { flash('请先导入乐谱和音频'); return }
+    if (!project.projectId || !project.pages.length) { setNotice({ title: '先添加歌谱，才能自动对齐', description: '请先选择这首歌的歌谱。', primary: { label: '选择歌谱', onClick: chooseScore } }); return }
+    if (!project.source.audioUrl) { setNotice({ title: '先添加音频，才能自动对齐', description: '请先选择这首歌对应的音频。', primary: { label: '选择音频', onClick: chooseAudio } }); return }
     if (autoBusy) return
     setAutoBusy(true); setAutoStage('正在准备自动对齐')
     setAnalysisProgress({ kind: 'align', percent: 0, stage: '正在准备自动对齐' })
@@ -629,7 +834,7 @@ function App() {
         if (status.status === 'failed') throw new Error(status.error || '自动对齐失败')
         if (status.status === 'completed') { setAutoCandidates(status.candidates || []); return }
       }
-    } catch (error) { flash(error instanceof Error ? error.message : '自动对齐失败') }
+    } catch (error) { fail('自动对齐没有完成', '可以重试，也可以播放音频，手动记录每句开始的位置。', error, { label: '重试自动对齐', onClick: () => { void startAutoAlign() } }, { label: '手动打点', onClick: () => flash('播放音频，唱到每句开始时点击“打点”') }) }
     finally { setAutoBusy(false); setAutoStage(''); setAnalysisProgress(null) }
   }
   const applyAutoCandidates = (indices: number[]) => {
@@ -643,7 +848,7 @@ function App() {
     })
     if (!actionable.length) {
       setAutoCandidates(null)
-      flash('这些乐句已有时间，原有打点保持不变')
+      setNotice({ title: '这些乐句已经设置过时间', description: '自动对齐只补充没有时间的乐句，因此这次没有改动。可以选中乐句，在右侧调整开始和结束时间。', tone: 'info', primary: { label: '选择乐句并检查时间', onClick: () => { if (highlightMode === 'full') setTool('line-edit'); else chooseRegions() } } })
       return
     }
     lastHistoryAt.current = 0
@@ -665,30 +870,54 @@ function App() {
     flash(`已填入 ${actionable.length} 条乐句的时间；原有打点已保留`)
   }
   const openExport = async () => {
-    if (!project.projectId) { flash('请先选择乐谱'); return }
+    if (!project.projectId) { setNotice({ title: '先添加歌谱，才能生成视频', description: '请选择歌谱和对应音频，完成分区与时间设置后再生成视频。', primary: { label: '选择歌谱', onClick: chooseScore } }); return }
+    if (exportJob) { setExportOpen(true); return }
     const settings = project.export || initialProject.export!
-    setExportSettings(settings); setPreviewTime(time); setExportJob(null); setValidation(null); setExportOpen(true)
+    setExportSettings(settings); setPreviewTime(time); setExportJob(null); setValidation(null); setValidationError(null); setPreviewError(false); setPreviewUrl(null); setExportOpen(true)
+    await checkExport({ ...project, export: settings })
+  }
+  const checkExport = async (snapshot: Project = { ...project, export: exportSettings }) => {
+    setValidationError(null); setValidation(null)
     try {
-      await persistProject({ ...project, export: settings })
-      const response = await fetch(`${API}/api/projects/${project.projectId}/validate`, { method: 'POST' })
-      if (response.ok) setValidation(await response.json())
-    } catch (error) { flash(error instanceof Error ? error.message : '无法检查导出条件') }
+      await persistProject(snapshot)
+      const response = await fetch(`${API}/api/projects/${snapshot.projectId}/validate`, { method: 'POST' })
+      if (!response.ok) throw new Error('无法读取检查结果，请重试。')
+      setValidation(await response.json())
+    } catch (error) { setValidationError(error instanceof Error ? error.message : '无法检查导出条件') }
+  }
+  const fixExport = (error: string) => {
+    setExportOpen(false)
+    if (error.includes('音频')) { chooseAudio(); return }
+    if (error.includes('导入乐谱')) { chooseScore(); return }
+    if (error.includes('至少添加')) { beginRegions(); return }
+    // Validation numbers refer to the backend's time-sorted list, not the score order.
+    const number = error.match(/第\s*(\d+)\s*句/)
+    const segment = number ? [...project.segments].sort((a, b) => a.startTime - b.startTime)[Number(number[1]) - 1] : undefined
+    if (segment) {
+      selectOne(segment.id)
+      const index = project.pages.findIndex(p => p.id === segment.pageId)
+      if (index >= 0) setActivePage(index)
+      setTool(highlightMode === 'full' ? 'line-edit' : 'select')
+      flash('已选中需要修改的乐句，请在右侧调整时间或标注')
+      setInspectorOpen(true); window.setTimeout(() => document.querySelector<HTMLButtonElement>(`[data-segment-id="${segment.id}"]`)?.focus(), 0)
+    }
   }
   const startVideoExport = async () => {
     if (!project.projectId || exportBusy) return
-    setExportBusy(true); setExportJob(null); setValidation(null)
+    setExportBusy(true); setExportJob(null); setValidation(null); setValidationError(null)
     const snapshot: Project = { ...project, export: exportSettings }
     setProject(snapshot)
     try {
       await persistProject(snapshot)
       const reportResponse = await fetch(`${API}/api/projects/${project.projectId}/validate`, { method: 'POST' })
+      if (!reportResponse.ok) throw new Error('无法检查导出条件，请重新检查。')
       const report = await reportResponse.json(); setValidation(report)
       if (!reportResponse.ok || !report.valid) { setExportBusy(false); return }
       const response = await fetch(`${API}/api/projects/${project.projectId}/export`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(exportSettings) })
       const data = await response.json()
       if (!response.ok) throw new Error(data.detail?.errors?.join('；') || data.detail || '无法开始导出')
       setExportJob({ ...data, progress: 0 })
-    } catch (error) { setExportBusy(false); flash(error instanceof Error ? error.message : '视频导出启动失败') }
+    } catch (error) { setExportBusy(false); setValidationError(error instanceof Error ? error.message : '视频没有开始生成，请重试。') }
   }
   const pointerPosition = (event: React.PointerEvent) => {
     const rect = pageRef.current!.getBoundingClientRect()
@@ -773,31 +1002,48 @@ function App() {
   const hasAudio = Boolean(project.source.audio && project.source.audioUrl)
   const updateControl = <DesktopUpdate busy={autoBusy || boxBusy || exportBusy || scoreImporting || audioImporting || duplicateBusy}
     save={() => localStorage.setItem('pujian-project', JSON.stringify(projectRef.current))}/>
+  const feedback = <>
+    {saveIssue && <div className="feedback-panel feedback-error save-feedback" role="alert"><strong>{saveIssue === 'local' ? '当前更改尚未保存' : '项目文件暂时没有保存成功'}</strong><p>{saveIssue === 'local' ? '请先重试保存，暂时不要关闭软件。' : '当前更改已保存在本机，可以重试保存项目文件。'}</p><button className="button button-primary" onClick={() => { void retrySave() }}>重试保存</button></div>}
+    {notice && <ActionDialog notice={notice} onClose={() => setNotice(null)}/>}
+    {message && <div className="toast" role="status"><Check size={22}/><span>{message.text}</span>{message.action && <button onClick={message.action.onClick}>{message.action.label}</button>}<button className="toast-close" aria-label="关闭通知" onClick={() => setMessage(null)}><X size={20}/></button></div>}
+  </>
   if (!hasScore || !hasAudio) return <>
-    <HomeImportView scoreName={hasScore ? fileName(project.source.pdf) : null} audioName={hasAudio ? fileName(project.source.audio) : null} scoreImporting={scoreImporting} audioImporting={audioImporting} onChooseScore={() => scoreInput.current?.click()} onChooseAudio={() => audioInput.current?.click()}/>
+    <HomeImportView scoreName={hasScore ? fileName(project.source.pdf) : null} audioName={hasAudio ? fileName(project.source.audio) : null} scoreImporting={scoreImporting} audioImporting={audioImporting} onChooseScore={chooseScore} onChooseAudio={chooseAudio}/>
     {importControls}
-    <div className="home-update">{updateControl}</div>
-    {message && <div className="toast"><Check size={15}/>{message}</div>}
+    <div className="home-update"><DisplaySize value={textSize} onChange={setTextSize}/>{updateControl}</div>
+    {feedback}
   </>
 
   return <div className="app-shell">
     <header className="topbar">
       <div className="topbar-left"><div className="brand"><div className="brand-mark"><Music2 size={17} strokeWidth={2.4} /></div><span>谱间</span><span className="brand-divider"/><span className="product-label">歌谱同步工作台</span></div><div className="highlight-mode-control" role="group" aria-label="文字高亮方式"><span>高亮</span><button type="button" aria-pressed={highlightMode === 'wipe'} title="播放时从左到右逐渐高亮文字" onClick={() => changeHighlightMode('wipe')}>从左到右</button><button type="button" aria-pressed={highlightMode === 'full'} title="乐句开始时整框高亮，直到下一句开始" onClick={() => changeHighlightMode('full')}>整框</button></div></div>
-      <div className="top-actions">{updateControl}<button className="icon-button" title="撤销（Ctrl+Z）" disabled={!undoHistory.current.length} onClick={undoProject}><Undo2 size={17}/></button><button className="icon-button" title="重做（Ctrl+Shift+Z）" disabled={!redoHistory.current.length} onClick={redoProject}><Redo2 size={17}/></button><span className="top-separator"/><button className="button button-primary" onClick={openExport}><Upload size={15}/>导出视频</button></div>
+      <div className="top-actions"><DisplaySize value={textSize} onChange={setTextSize}/>{updateControl}<button className="button button-secondary history-button" title="撤销（Ctrl+Z）" disabled={!undoHistory.current.length} onClick={undoProject}><Undo2 size={22}/>撤销</button><button className="button button-secondary history-button" title="重做（Ctrl+Shift+Z）" disabled={!redoHistory.current.length} onClick={redoProject}><Redo2 size={22}/>重做</button><button className="button button-primary" onClick={openExport}><Upload size={15}/>导出视频</button></div>
     </header>
-    <div className="main-layout">
+    <div className={`main-layout ${inspectorOpen ? 'inspector-open' : 'inspector-closed'}`}>
       <main className="workspace">
-        <div className="workspace-toolbar"><div className="toolbar-files"><button className="file-chip" title={project.source.pdf ? `点击重新选择乐谱：${project.source.pdf}` : '选择 PDF 或 JPG、PNG、WebP 乐谱'} onClick={() => scoreInput.current?.click()}><FileImage size={14}/><span>歌谱</span><strong>{fileName(project.source.pdf) || '选择乐谱'}</strong></button><button className="file-chip" title={project.source.audio ? `点击重新选择 MP3：${project.source.audio}` : '选择 MP3 音频'} onClick={() => audioInput.current?.click()}><FileAudio2 size={14}/><span>MP3</span><strong>{fileName(project.source.audio) || '选择音频'}</strong></button></div><div className="toolbar-right"><div className="page-count">{project.pages.length ? <><span>第</span><strong>{activePage + 1}</strong><span>/ {project.pages.length} 页</span><button className="page-arrow" disabled={activePage === 0} onClick={() => setActivePage(activePage - 1)}><ChevronLeft size={15}/></button><button className="page-arrow" disabled={activePage >= project.pages.length - 1} onClick={() => setActivePage(activePage + 1)}><ChevronRight size={15}/></button></> : <span>等待导入乐谱</span>}</div><span className="toolbar-sep"/><div className="zoom-control"><button title="缩小乐谱" onClick={() => changeZoom(-.1)}><ZoomOut size={15}/></button><button className="zoom-value" title="点击恢复自动适配" onClick={() => setZoom(null)}>{zoom === null ? '自动适配' : `${Math.round(zoom * 100)}%`}</button><button title="放大乐谱" onClick={() => changeZoom(.1)}><ZoomIn size={15}/></button></div></div></div>
+        <div className="workspace-toolbar"><div className="toolbar-files"><button className="file-chip" title={project.source.pdf ? `点击重新选择乐谱：${project.source.pdf}` : '选择 PDF 或 JPG、PNG、WebP 乐谱'} onClick={chooseScore}><FileImage size={14}/><span>歌谱</span><strong>{fileName(project.source.pdf) || '选择乐谱'}</strong></button><button className="file-chip" title={project.source.audio ? `点击重新选择音频：${project.source.audio}` : '选择音频文件'} onClick={chooseAudio}><FileAudio2 size={14}/><span>音频</span><strong>{fileName(project.source.audio) || '选择音频'}</strong></button></div><div className="toolbar-right"><button className="button button-secondary inspector-toggle" aria-expanded={inspectorOpen} onClick={() => setInspectorOpen(open => !open)}>{inspectorOpen ? '收起乐句设置' : '乐句设置'}</button><div className="page-count">{project.pages.length ? <><span>第</span><strong>{activePage + 1}</strong><span>/ {project.pages.length} 页</span><button aria-label="上一页歌谱" className="page-arrow" disabled={activePage === 0} onClick={() => setActivePage(activePage - 1)}><ChevronLeft size={15}/></button><button aria-label="下一页歌谱" className="page-arrow" disabled={activePage >= project.pages.length - 1} onClick={() => setActivePage(activePage + 1)}><ChevronRight size={15}/></button></> : <span>等待导入乐谱</span>}</div><span className="toolbar-sep"/><div className="zoom-control"><button aria-label="缩小乐谱" title="缩小乐谱" onClick={() => changeZoom(-.1)}><ZoomOut size={15}/></button><button className="zoom-value" title="点击使歌谱适合窗口宽度" onClick={() => setZoom(null)}>{zoom === null ? '适合宽度' : `${Math.round(zoom * 100)}%`}</button><button aria-label="放大乐谱" title="放大乐谱" onClick={() => changeZoom(.1)}><ZoomIn size={15}/></button></div></div></div>
         {highlightMode === 'full' ? <div className="segmentation-toolbar partition-toolbar">
           <span>直线分区</span>
           {([['line-h', '整页横线'], ['line-v', '整页竖线'], ['cell-cut', '框内竖切'], ['line-edit', '调整分隔线']] as const).map(([value, label]) =>
-            <button key={value} className={`button compact ${partitionTool === value ? 'button-active' : 'button-quiet'}`} aria-pressed={partitionTool === value} disabled={playing || (needsFreshPartition && (value === 'line-h' || value === 'line-v'))} onClick={() => setTool(value)}>{label}</button>)}
-          <button className="button button-quiet compact" disabled={!selectedLine || playing} onClick={deletePartitionLine}>删除分隔线</button>
-          <button className="button button-quiet compact reset-toolbar" disabled={!project.segments.length && !project.partitions?.some(item => item.horizontal.length || item.vertical.length)} onClick={() => setResetOpen(true)}><RotateCcw size={13}/>重新分区</button>
-          <small>{needsFreshPartition ? '当前页已有标注，可继续打点或框内竖切；要重新画线，请先点“重新分区”' : partitionTool === 'line-h' ? '点击添加横线；先定每行上下，再用左右两条竖线围成分区' : partitionTool === 'line-v' ? '点击添加贯穿整页的竖线，通常左右各一条' : partitionTool === 'cell-cut' ? '点击闭合分区内部，仅切开这一行' : '拖动分隔线调整；点击分区可查看打点，空白分区可跳过'}</small>
-        </div> : <div className="segmentation-toolbar"><span>切分乐谱</span><button className={`button compact ${tool === 'row' ? 'button-active' : 'button-quiet'}`} title="添加标注（N）" onClick={() => setTool(tool === 'row' ? 'select' : 'row')}><span className="horizontal-line-icon"/>添加标注</button><button className={`button compact ${tool === 'cut' ? 'button-active' : 'button-quiet'}`} onClick={() => setTool(tool === 'cut' ? 'select' : 'cut')}><span className="vertical-line-icon"/>竖切成框</button><button className="button button-quiet compact" disabled={boxBusy || !project.pages.length} onClick={() => void startAutoBoxes()}>{boxBusy ? <LoaderCircle className="spin" size={13}/> : <WandSparkles size={13}/>} {boxBusy ? '正在框选' : '自动框选'}</button><button className="button button-quiet compact" disabled={duplicateBusy || !selected || !project.segments.some(segment => segment.id === selected)} onClick={() => void duplicateBelow()} title={selectedIds.length > 1 ? `复制已选的 ${selectedIds.length} 个标注到下一行` : "复制选中标注到下一行"}><Scissors size={13}/>{duplicateBusy ? '正在复制' : '复制到下一行'}{selectedIds.length > 1 ? ` (${selectedIds.length})` : ""}</button><button className={`button compact ${tool === 'select' ? 'button-active' : 'button-quiet'}`} onClick={() => setTool('select')}>框选乐句</button><button className="button button-quiet compact" disabled={selectedIds.length < 2} onClick={mergeSelected}>合并乐句{selectedIds.length > 1 ? ` (${selectedIds.length})` : ''}</button><button className="button button-active compact auto-align-launch" disabled={autoBusy || !project.pages.length || !project.source.audioUrl} onClick={() => void startAutoAlign()}>{autoBusy ? <LoaderCircle className="spin" size={13}/> : <WandSparkles size={13}/>} {autoBusy ? '正在对齐' : '自动对齐'}</button><button className="button button-quiet compact reset-toolbar" disabled={!project.segments.length && !(project.flags || []).length} onClick={() => setResetOpen(true)}><RotateCcw size={13}/>重新标注</button><small>{autoBusy ? autoStage : boxBusy ? '正在查找歌词行和明显留白' : tool === 'row' ? '从一个角拖到对角，自由决定框的宽和高' : tool === 'cut' ? '点击已有标注框，将它分成左右两个独立框' : '在空白处拖框多选；Shift 点击可追加选择'}</small></div>}
+            <button key={value} className={`button compact ${partitionTool === value ? 'button-active' : 'button-quiet'}`} aria-pressed={partitionTool === value} onClick={() => requestPartitionTool(value)}>{label}</button>)}
+          <ToolMenu><button className="button" onClick={deletePartitionLine}>删除分隔线</button><button className="button reset-toolbar" disabled={!project.segments.length && !project.partitions?.some(item => item.horizontal.length || item.vertical.length)} onClick={() => setResetOpen(true)}>重新分区</button></ToolMenu>
+          <div className="tool-instruction">{partitionTool === 'line-h' ? '画横线：在歌谱上点击，确定每行的上边和下边。' : partitionTool === 'line-v' ? '画整页竖线：通常在歌词左边、右边各画一条。' : partitionTool === 'cell-cut' ? '框内竖切：点击一个四边闭合的分区，将这一行分成左右两部分。' : '调整分隔线：拖动线条调整；点击分区可选择乐句或恢复跳过的区域。'}</div>
+        </div> : <div className="segmentation-toolbar"><span>歌词框</span>
+          <button className={`button ${tool === 'row' ? 'button-active' : 'button-quiet'}`} title="添加标注（N）" aria-pressed={tool === 'row'} onClick={() => setTool(tool === 'row' ? 'select' : 'row')}><span className="horizontal-line-icon"/>添加标注</button>
+          <button className={`button ${tool === 'select' ? 'button-active' : 'button-quiet'}`} aria-pressed={tool === 'select'} onClick={() => setTool('select')}>框选乐句</button>
+          <button className={`button ${tool === 'cut' ? 'button-active' : 'button-quiet'}`} aria-pressed={tool === 'cut'} onClick={() => setTool(tool === 'cut' ? 'select' : 'cut')}><span className="vertical-line-icon"/>竖切成框</button>
+          <ToolMenu>
+            <button className="button" disabled={boxBusy || !project.pages.length} onClick={() => void startAutoBoxes()}>{boxBusy ? '正在框选' : '自动框选'}</button>
+            <button className="button" disabled={duplicateBusy} onClick={() => void duplicateBelow()}>{duplicateBusy ? '正在复制' : '复制到下一行'}</button>
+            <button className="button" onClick={mergeSelected}>合并乐句{selectedIds.length > 1 ? ` (${selectedIds.length})` : ''}</button>
+            <button className="button" disabled={autoBusy} onClick={() => void startAutoAlign()}>{autoBusy ? '正在对齐' : '自动对齐'}</button>
+            <button className="button reset-toolbar" disabled={!project.segments.length && !(project.flags || []).length} onClick={() => setResetOpen(true)}>重新标注</button>
+          </ToolMenu>
+          <div className="tool-instruction">{autoBusy ? autoStage : boxBusy ? '正在查找歌词行和明显留白' : tool === 'row' ? '在空白处拖出一个框，框住这一句歌词。' : tool === 'cut' ? '点击歌词框内部，将它分成左右两个框。' : '先点选一个框，再拖动它；在空白处拖出范围，可以多选。'}</div>
+        </div>}
+
         <div className="canvas-area" ref={canvasRef}>
-          {currentPage ? <div className="page-frame" key={currentPage.id} style={{ width: zoom === null ? '58%' : `${Math.round(510 * zoom)}px`, maxWidth: 'calc(100% - 12px)' }}><div ref={pageRef} className={`score-page ${tool === 'row' ? 'drawing' : ''} ${tool === 'cut' ? 'anchoring' : ''} ${tool === 'select' ? 'marquee-mode' : ''} ${playing ? 'previewing' : ''} ${highlightMode === 'full' ? 'partition-mode' : ''}`} style={{ aspectRatio: `${currentPage.width} / ${currentPage.height}` }} onPointerDown={pagePointerDown} onPointerMove={pagePointerMove} onPointerUp={pagePointerUp} onPointerCancel={pagePointerUp}>
+          {currentPage ? <div className="page-frame" key={currentPage.id} style={{ width: zoom === null ? '100%' : `${Math.round(510 * zoom)}px`, maxWidth: zoom === null ? 'min(960px, calc(100% - 12px))' : undefined }}><div ref={pageRef} className={`score-page ${tool === 'row' ? 'drawing' : ''} ${tool === 'cut' ? 'anchoring' : ''} ${tool === 'select' ? 'marquee-mode' : ''} ${playing ? 'previewing' : ''} ${highlightMode === 'full' ? 'partition-mode' : ''}`} style={{ aspectRatio: `${currentPage.width} / ${currentPage.height}` }} onPointerDown={pagePointerDown} onPointerMove={pagePointerMove} onPointerUp={pagePointerUp} onPointerCancel={pagePointerUp}>
               <img src={currentPage.image.startsWith('data:') || currentPage.image.startsWith('blob:') ? currentPage.image : currentPage.image} alt={`乐谱第 ${activePage + 1} 页`} draggable={false}/>
               <svg className="annotation-layer" viewBox="0 0 1000 1414" preserveAspectRatio="none">
                 <defs>
@@ -805,7 +1051,7 @@ function App() {
                   <clipPath id="ink-reveal">{activeRegions.map((item, index) => item.pageId === currentPage.id && <rect key={index} x={item.region.x * 1000} y={item.region.y * 1414} width={item.region.width * activeReveal[index] * 1000} height={item.region.height * 1414}/>)}</clipPath>
                 </defs>
                 {activeRegions.some(item => item.pageId === currentPage.id) && progress > 0 && <image href={currentPage.image} x="0" y="0" width="1000" height="1414" preserveAspectRatio="none" filter="url(#ink-recolor)" clipPath="url(#ink-reveal)" pointerEvents="none"/>}
-                {project.segments.flatMap(seg => segmentRegions(seg).map((item, part) => ({ seg, item, part })).filter(entry => entry.item.pageId === currentPage.id)).sort((a, b) => Number(selectedIds.includes(a.seg.id)) - Number(selectedIds.includes(b.seg.id))).map(({ seg, item, part }) => { const r = item.region; const matching = project.segments.filter(candidate => sharedRegionKey(candidate) === sharedRegionKey(seg)); const repeatIndex = matching.findIndex(candidate => candidate.id === seg.id); const x = r.x * 1000; const y = r.y * 1414; const badgeX = x + (x + 68 <= 1000 ? repeatIndex % 2 * 36 : -(repeatIndex % 2) * 36); const badgeY = Math.max(2, y - 29 - Math.floor(repeatIndex / 2) * 26); return <g key={`${seg.id}-${part}`} className={`annotation ${selectedIds.includes(seg.id) ? 'is-selected' : ''}`} onPointerDown={e => { if (highlightMode === 'full') return; e.stopPropagation(); if (e.shiftKey) { selectSegment(seg.id, true); return }; selectSegment(seg.id, false); if (tool === 'row') return; if (tool === 'cut') { splitSegment(seg, part, e); return }; if (seg.partitionKey) return; dragRef.current = { id: seg.id, part, kind: 'move', startX: e.clientX, startY: e.clientY, region: { ...r } }; (e.currentTarget as SVGGElement).setPointerCapture(e.pointerId) }}>
+                {project.segments.flatMap(seg => segmentRegions(seg).map((item, part) => ({ seg, item, part })).filter(entry => entry.item.pageId === currentPage.id)).sort((a, b) => Number(selectedIds.includes(a.seg.id)) - Number(selectedIds.includes(b.seg.id))).map(({ seg, item, part }) => { const r = item.region; const matching = project.segments.filter(candidate => sharedRegionKey(candidate) === sharedRegionKey(seg)); const repeatIndex = matching.findIndex(candidate => candidate.id === seg.id); const x = r.x * 1000; const y = r.y * 1414; const badgeX = x + (x + 68 <= 1000 ? repeatIndex % 2 * 36 : -(repeatIndex % 2) * 36); const badgeY = Math.max(2, y - 29 - Math.floor(repeatIndex / 2) * 26); return <g key={`${seg.id}-${part}`} data-score-id={seg.id} className={`annotation ${selectedIds.includes(seg.id) ? 'is-selected' : ''}`} onPointerDown={e => { if (highlightMode === 'full') return; e.stopPropagation(); if (e.shiftKey) { selectSegment(seg.id, true); return }; const wasSelected = selectedIds.includes(seg.id); selectSegment(seg.id, false); if (tool === 'row') return; if (tool === 'cut') { splitSegment(seg, part, e); return }; if (seg.partitionKey || !wasSelected) return; dragRef.current = { id: seg.id, part, kind: 'move', startX: e.clientX, startY: e.clientY, region: { ...r } }; (e.currentTarget as SVGGElement).setPointerCapture(e.pointerId) }}>
                   <rect className="region-hit-area" x={r.x * 1000} y={r.y * 1414} width={r.width * 1000} height={r.height * 1414} rx="4"/>
                   <rect className="region-outline" x={r.x * 1000} y={r.y * 1414} width={r.width * 1000} height={r.height * 1414} rx="4"/>
                   {editingNumber?.id === seg.id && editingNumber.part === part
@@ -829,22 +1075,35 @@ function App() {
                 {marquee && <rect className="marquee-region" x={marquee.x * 1000} y={marquee.y * 1414} width={marquee.width * 1000} height={marquee.height * 1414}/>}
                 {highlightMode === 'full' && !playing && <PartitionEditor key={currentPage.id} partition={pagePartition} tool={partitionTool} blocked={needsFreshPartition} selectedLine={selectedLine}
                   segments={project.segments.filter(segment => segment.pageId === currentPage.id)} onChange={changePartition}
-                  onLine={setSelectedLine} onSegment={selectOne} onMessage={flash} onLegacyCut={(segment, event) => splitSegment(segment, 0, event)}/>}
+                  onLine={setSelectedLine} onSegment={selectOne} onMessage={flash} onBlocked={() => explainPartitionConflict(partitionTool)} onInvalidCut={() => setNotice({ title: '这里还不能画框内竖线', description: '请点击由上、下、左、右四条边围成的分区内部，并避开左右边线。还没形成分区时，先画横线和左右两条整页竖线。', primary: { label: '画横线', onClick: () => requestPartitionTool('line-h') }, secondary: { label: '画整页竖线', onClick: () => requestPartitionTool('line-v') } })} onLegacyCut={(segment, event) => splitSegment(segment, 0, event)}/>}
               </svg>
             </div><div className="page-caption"><span>第 {activePage + 1} 页</span><span>{currentPage.width} × {currentPage.height} px · 原始比例标注</span></div></div> : <div className="empty-workspace"><div className="empty-art"><div className="music-note note-a">♪</div><div className="music-note note-b">♫</div><div className="empty-paper"><div className="paper-lines">𝅘𝅥𝅮　1 2 3 5　|　6 — 5 3<br/>　小 星 星　　亮 晶 晶</div><div className="paper-highlight"/></div><div className="upload-orbit"><ImagePlus size={20}/></div></div><div className="empty-copy"><span className="eyebrow">从乐谱开始</span><h1>让每一句歌，都有自己的节奏</h1><p>导入 PDF 或 JPG、PNG、WebP 乐谱，再选择音频，<br/>逐行标注歌词位置并校准播放时间。</p></div><p className="empty-start-note">在上方工具栏选择歌谱和音频即可开始</p><div className="supported-note"><span className="check-mini"><Check size={11}/></span>页面按原始尺寸渲染，标注坐标随缩放保持准确</div></div>}
         </div>
       </main>
-      <aside className="right-panel"><div className="right-panel-title"><div><span className="eyebrow">检查器</span><h2>标注属性</h2></div><button className="icon-button"><MoreHorizontal size={17}/></button></div>{selected && project.segments.some(s => s.id === selected) ? (() => { const seg = project.segments.find(s => s.id === selected)!; const index = project.segments.indexOf(seg); const neighbors = [index > 0 ? project.segments[index - 1] : null, project.segments[index + 1] || null].filter((item): item is Segment => Boolean(item)); const targetId = neighbors.some(item => item.id === mergeTarget) ? mergeTarget! : neighbors[0]?.id || ""; return <><div className="inspector-card"><div className="inspector-segment-title"><div className="segment-color-dot"/><div><strong>乐句 {String(project.segments.indexOf(seg) + 1).padStart(2, '0')}</strong><span>页面 {project.pages.findIndex(p => p.id === seg.pageId) + 1} · 左至右</span></div><button className="icon-button tiny" onClick={() => deleteSegment(seg.id)}><X size={15}/></button></div><div className="inspector-order"><label className="field-label" htmlFor="phrase-order">乐句序号</label><div><input id="phrase-order" type="text" inputMode="numeric" value={orderDraft ?? String(index + 1)} onChange={e => setOrderDraft(e.target.value)} onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); moveSegmentTo(seg.id, e.currentTarget.value) } else if (e.key === "Escape") setOrderDraft(null) }}/><button className="button button-secondary" disabled={orderDraft === null || orderDraft === String(index + 1)} onClick={() => moveSegmentTo(seg.id, orderDraft || "")}>移动到此</button></div></div><label className="field-label">开始时间</label><div className="time-input"><Clock3 size={14}/><input value={formatTime(seg.startTime)} onChange={e => { const v = e.target.value.split(':').reduce((a, b) => a * 60 + Number(b), 0); if (Number.isFinite(v)) updateSegment(seg.id, { startTime: v }) }}/><button onClick={() => updateSegment(seg.id, { startTime: time })}>设为当前</button></div><label className="field-label">结束时间</label><div className="time-input"><Clock3 size={14}/><input value={formatTime(seg.endTime)} onChange={e => { const v = e.target.value.split(':').reduce((a, b) => a * 60 + Number(b), 0); if (Number.isFinite(v)) updateSegment(seg.id, { endTime: v }) }}/><button onClick={() => updateSegment(seg.id, { endTime: time })}>设为当前</button></div><div className="field-divider"/><div className="highlight-setting"><div><strong>高亮样式</strong><span>橘红色文字 · 无底色</span></div><div className="yellow-swatch"/></div>{segmentRegions(seg).length > 1 && <div className="inspector-merge"><label className="field-label">框顺序 · {segmentRegions(seg).length} 个框</label><button className="button button-secondary" onClick={() => reverseSegmentRegions(seg.id)}>反转框顺序</button></div>}{highlightMode !== 'full' && <div className="inspector-merge"><label className="field-label" htmlFor="merge-target">与哪句合并</label><select id="merge-target" value={targetId} disabled={!neighbors.length} onChange={e => setMergeTarget(e.target.value)}>{neighbors.map(item => { const itemIndex = project.segments.indexOf(item); return <option key={item.id} value={item.id}>乐句 {String(itemIndex + 1).padStart(2, "0")}（{itemIndex < index ? "上一句" : "下一句"}）</option> })}</select><button className="button button-secondary" disabled={!targetId} onClick={() => mergeSegments([seg.id, targetId])}>合并这两句</button></div>}<div className="inspector-actions">{highlightMode !== 'full' && <button className="button button-secondary repeat-region-button" onClick={repeatSelectedRegions}>重复使用选中框{selectedIds.length > 1 ? `（${selectedIds.length}）` : ""}</button>}<button className="button button-danger-quiet" onClick={() => deleteSegment(seg.id)}>{seg.partitionKey ? '跳过此区' : '删除标注'}</button></div></div></> })() : <div className="inspector-empty"><div className="inspector-empty-icon"><WandSparkles size={19}/></div><strong>选择一条标注</strong><p>选中乐谱上的标注区域，<br/>即可调整时间与位置。</p><div className="inspector-hint"><Sparkles size={14}/><span>{highlightMode === 'full' ? '先用横线分行，再画左右两条竖线；点击闭合分区可竖切' : '拖动框内可移动，拖动边线或四角可调整大小'}</span></div></div>}
-      </aside>
-      <div className="transport-panel"><div className="transport-left"><button className="play-button" onClick={togglePlay}>{playing ? <Pause size={17} fill="currentColor"/> : <Play size={17} fill="currentColor"/>}</button><button className="flag-button" onClick={addFlag} disabled={!project.segments.length || !project.source.audio} title={`下一次打点：${nextFlagLabel === "收尾" ? "最后一句结束" : nextFlagLabel === "完成" ? "已完成" : `乐句 ${nextFlagLabel}`}`}><Flag size={14}/><span>打点</span><em>{nextFlagLabel}</em></button><div className="transport-time"><strong>{formatTime(time)}</strong><span>/ {formatTime(duration)}</span></div><div className="transport-divider"/><div className="speed-control"><span>速度</span><select defaultValue="1" onChange={e => { if (audioRef.current) audioRef.current.playbackRate = Number(e.target.value) }}><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1">1.0×</option><option value="1.25">1.25×</option></select><ChevronDown size={12}/></div></div><div className="transport-right"><span className="now-playing-dot"/><span>{activeSegment ? `正在预览 · 乐句 ${String(project.segments.indexOf(activeSegment) + 1).padStart(2, '0')}` : project.source.audio ? '音频已就绪' : '等待导入音频'}</span><button className="icon-button tiny"><Settings2 size={16}/></button></div></div>
-      <TimelinePanel audioUrl={project.source.audioUrl} audioName={project.source.audio} duration={duration || project.audioDuration || 0} flags={visibleFlags} segments={project.segments} selected={selected} time={time} playing={playing} onSelect={id => { selectOne(id); const pageIndex = project.pages.findIndex(page => page.id === project.segments.find(segment => segment.id === id)?.pageId); if (pageIndex >= 0) setActivePage(pageIndex) }} onSeek={seek} onMoveSegment={(id, startTime, endTime) => updateSegment(id, { startTime, endTime })}/>
+      {inspectorOpen && <InspectorPanel project={project} selected={selected} selectedCount={selectedIds.length} timed={timedIds} full={highlightMode === 'full'} currentTime={time} orderDraft={orderDraft} mergeTarget={mergeTarget}
+        onClose={() => setInspectorOpen(false)} onOrderDraft={setOrderDraft} onMoveOrder={moveSegmentTo} onMergeTarget={setMergeTarget} onMerge={mergeSegments} onTime={commitTime} onSeek={seek} onReverse={reverseSegmentRegions} onRepeat={repeatSelectedRegions} onDelete={deleteSegment}/>}
+
+      <div className="transport-panel">
+        <div className="transport-left"><button className="play-button" onClick={togglePlay} aria-label={playing ? '暂停播放' : '播放音频'}>{playing ? <Pause size={24}/> : <Play size={24}/>}<span>{playing ? '暂停' : '播放'}</span></button>
+          <button className="flag-button" onClick={addFlag}><Flag size={24}/><strong>打点</strong><span className="next-flag">{nextFlagDescription}</span></button>
+          <div className="transport-time"><strong>{formatTime(time)}</strong><span>/ {formatTime(duration || project.audioDuration || 0)}</span></div>
+        </div>
+        <div className="transport-right"><label className="speed-control"><span>播放速度</span><select aria-label="播放速度" defaultValue="1" onChange={e => { if (audioRef.current) audioRef.current.playbackRate = Number(e.target.value) }}><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1">1.0×</option><option value="1.25">1.25×</option></select></label></div>
+        <div className={`point-feedback ${pointFeedback?.warning ? 'point-warning' : ''}`} role="status" aria-live="polite">{pointFeedback?.text || '唱到下一句开始时点击“打点”，也可以按 Enter。'}</div>
+      </div>
+
+      <TimelinePanel audioUrl={project.source.audioUrl} audioName={project.source.audio} duration={duration || project.audioDuration || 0} flags={visibleFlags} segments={project.segments} selected={selected} time={time} playing={playing} onSelect={id => { selectOne(id); const pageIndex = project.pages.findIndex(page => page.id === project.segments.find(segment => segment.id === id)?.pageId); if (pageIndex >= 0) setActivePage(pageIndex) }} onSeek={seek} onChooseAudio={chooseAudio} highlightMode={highlightMode} spareTimings={project.spareTimings} onMoveSegment={moveTimelineSegment} onDeleteTiming={deleteTimelineSegment} onInsertTiming={insertTimelineSegment}/>
     </div>
-    {resetOpen && <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget) setResetOpen(false) }}><div className="reset-dialog" role="dialog" aria-modal="true" aria-labelledby="reset-title" aria-describedby="reset-description"><div className="reset-dialog-icon"><RotateCcw size={20}/></div><h2 id="reset-title">{highlightMode === 'full' ? '重新分区这首歌？' : '重新标注这首歌？'}</h2><p id="reset-description">将清空{highlightMode === 'full' ? '分隔线、' : ' '} {project.segments.length} 条乐句标注和 {(project.flags || []).length} 个打点。乐谱与音频会保留。</p><div className="reset-dialog-actions"><button className="button button-secondary" autoFocus onClick={() => setResetOpen(false)}>取消</button><button className="button reset-confirm-button" onClick={resetAnnotations}>清空标注</button></div><small>清空后可立即按 Ctrl+Z 恢复。</small></div></div>}
+    {resetOpen && <ActionDialog notice={{
+      title: highlightMode === 'full' ? '清空现有标注，重新分区？' : '清空现有标注，重新标注？',
+      description: `将清空这首歌所有页面的分隔线、${project.segments.length} 条乐句和 ${(project.flags || []).length} 个打点。歌谱与音频会保留。清空后可点击通知中的“撤销上一步”恢复。`,
+      closeLabel: '保留现有标注', primary: { label: highlightMode === 'full' ? '清空并重新分区' : '清空并重新标注', danger: true, onClick: resetAnnotations },
+    }} onClose={() => setResetOpen(false)}/>}
     {analysisProgress && <ProgressDialog key={analysisProgress.kind} kind={analysisProgress.kind} percent={analysisProgress.percent} stage={analysisProgress.stage}/>}
-    {autoCandidates && <AutoAlignDialog candidates={autoCandidates} existingCount={project.segments.length} playing={playing} onClose={() => setAutoCandidates(null)} onListen={at => { seek(at); const audio = audioRef.current; if (audio) { void audio.play(); setPlaying(true) } }} onPause={() => { audioRef.current?.pause(); setPlaying(false) }} onApply={applyAutoCandidates}/>}
-    {boxCandidates && <AutoBoxDialog pages={project.pages} candidates={boxCandidates} existingCount={project.segments.length} onClose={() => setBoxCandidates(null)} onApply={applyAutoBoxes}/>}
-    {importControls}{message && <div className="toast"><Check size={15}/>{message}</div>}
-    {exportOpen && <ExportDialog settings={exportSettings} previewUrl={previewUrl} previewTime={previewTime} duration={duration || project.audioDuration || 0} validation={validation} job={exportJob} busy={exportBusy} onSettings={settings => setExportSettings(settings)} onPreviewTime={setPreviewTime} onExport={() => { void startVideoExport() }} onClose={() => setExportOpen(false)}/>}
+    {autoCandidates && <AutoAlignDialog candidates={autoCandidates} existingCount={project.segments.length} playing={playing} onClose={() => setAutoCandidates(null)} onListen={at => playAudio(at)} onPause={() => { audioRef.current?.pause(); setPlaying(false) }} onApply={applyAutoCandidates} onManual={() => { setAutoCandidates(null); flash('播放音频，唱到每句开始时点击“打点”') }}/>}
+    {boxCandidates && <AutoBoxDialog pages={project.pages} candidates={boxCandidates} existingCount={project.segments.length} onClose={() => setBoxCandidates(null)} onApply={applyAutoBoxes} onManual={() => { setBoxCandidates(null); setTool('row') }}/>}
+    {importControls}{feedback}
+    {exportOpen && <ExportDialog settings={exportSettings} previewUrl={previewUrl} previewTime={previewTime} duration={duration || project.audioDuration || 0} validation={validation} job={exportJob} busy={exportBusy} validationError={validationError} previewError={previewError} onRetryPreview={() => setPreviewRetry(n => n + 1)} onRecheck={() => { void checkExport() }} onFix={fixExport} onSettings={settings => setExportSettings(settings)} onPreviewTime={setPreviewTime} onExport={() => { void startVideoExport() }} onClose={() => setExportOpen(false)}/>}
   </div>
 }
 

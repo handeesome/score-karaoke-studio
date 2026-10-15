@@ -125,10 +125,14 @@ def validate_project(project: dict):
     errors: list[str] = []
     warnings: list[str] = []
     segments = sorted(project.get("segments", []), key=lambda item: float(item.get("startTime", 0)))
+    timed_ids = {flag.get("segmentId") for flag in project.get("flags", []) if flag.get("kind") != "end"}
+    assigned_ids = {segment["id"] for segment in segments if segment.get("timingSet") or segment["id"] in timed_ids}
     if not project.get("pages"):
         errors.append("尚未导入乐谱")
     if not segments:
         errors.append("请至少添加一条乐句标注")
+    elif not assigned_ids:
+        errors.append("第 1 句尚未设置时间，请先打点")
     try:
         audio_path = resolve_audio(project)
         duration = read_audio_duration(audio_path) or 0.0
@@ -144,9 +148,9 @@ def validate_project(project: dict):
         label = f"第 {index} 句"
         start, end = float(segment.get("startTime", -1)), float(segment.get("endTime", -1))
         regions = segment.get("regions") or [{"pageId": segment.get("pageId"), "region": segment.get("region", {})}]
-        if start < 0 or end <= start:
+        if segment["id"] in assigned_ids and (start < 0 or end <= start):
             errors.append(f"{label}的结束时间必须晚于开始时间")
-        if duration and end > duration + 0.05:
+        if segment["id"] in assigned_ids and duration and end > duration + 0.05:
             errors.append(f"{label}超出音频时长")
         for part in regions:
             region = part.get("region", {})
@@ -158,8 +162,10 @@ def validate_project(project: dict):
                     errors.append(f"{label}的标注区域超出页面范围")
             except (KeyError, TypeError, ValueError):
                 errors.append(f"{label}缺少有效的标注区域")
-    timed_ids = {flag.get("segmentId") for flag in project.get("flags", []) if flag.get("kind") != "end"}
     timed_segments = [segment for segment in segments if segment.get("timingSet") or segment.get("id") in timed_ids]
+    unassigned_count = len(segments) - len(assigned_ids)
+    if assigned_ids and unassigned_count:
+        warnings.append(f"还有 {unassigned_count} 条乐句未放入时间轴，视频只高亮已安排的乐句")
     for previous, current in zip(timed_segments, timed_segments[1:]):
         gap = float(current["startTime"]) - float(previous["endTime"])
         if gap < -0.05:

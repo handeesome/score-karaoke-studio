@@ -5,9 +5,10 @@ import { addCellCut, addGuide, containsPoint, moveGuide, partitionCells, type Pa
 type Props = { partition: PagePartition; tool: PartitionTool; blocked?: boolean; selectedLine: string | null; segments: Segment[];
   onChange: (partition: PagePartition) => void; onLine: (id: string | null) => void;
   onSegment: (id: string | null) => void; onMessage: (text: string) => void;
+  onBlocked: () => void; onInvalidCut: () => void;
   onLegacyCut: (segment: Segment, event: React.PointerEvent<SVGGElement>) => void }
 
-export default function PartitionEditor({ partition, tool, blocked, selectedLine, segments, onChange, onLine, onSegment, onMessage, onLegacyCut }: Props) {
+export default function PartitionEditor({ partition, tool, blocked, selectedLine, segments, onChange, onLine, onSegment, onMessage, onBlocked, onInvalidCut, onLegacyCut }: Props) {
   const [hover, setHover] = useState<{ x: number; y: number } | null>(null)
   const [draft, setDraft] = useState<PagePartition | null>(null)
   const drag = useRef<{ id: string; base: PagePartition; next: PagePartition; horizontal: boolean } | null>(null)
@@ -29,7 +30,7 @@ export default function PartitionEditor({ partition, tool, blocked, selectedLine
     }
     const idNew = `line-${crypto.randomUUID()}`
     if (tool === 'line-h' || tool === 'line-v') {
-      if (blocked) { onMessage('当前页已有标注，请先点击“重新分区”再画线'); return }
+      if (blocked) { onBlocked(); return }
       const next = addGuide(partition, tool === 'line-h' ? 'horizontal' : 'vertical', tool === 'line-h' ? p.y : p.x, idNew)
       if (next !== partition) { onChange(next); onSegment(null); onLine(idNew) }
     } else if (tool === 'cell-cut') {
@@ -37,7 +38,7 @@ export default function PartitionEditor({ partition, tool, blocked, selectedLine
       if (next === partition) {
         const old = segments.find(segment => !segment.partitionKey && containsPoint(segment.region, p.x, p.y))
         if (old) onLegacyCut(old, event)
-        else onMessage('请在四边闭合的分区内竖切，并避开左右边线')
+        else onInvalidCut()
       } else { onChange(next); onSegment(null); onLine(idNew) }
     } else {
       onLine(null)

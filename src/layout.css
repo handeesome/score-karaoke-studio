@@ -7,7 +7,8 @@
 .highlight-mode-control button[aria-pressed="true"]{background:#fff;color:#3c6748;box-shadow:0 1px 4px #243b291c}
 .highlight-mode-control button:hover:not([aria-pressed="true"]){background:#edf2ec}
 .score-page{width:100%;height:auto;max-height:none;aspect-ratio:auto}
-.canvas-area{align-items:flex-start;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
+.canvas-area{align-items:flex-start;justify-content:flex-start;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
+.page-frame{margin-inline:auto}
 html,body,#root{height:100%;min-height:0}
 body{min-width:0;height:100dvh;overflow:hidden}
 .app-shell{height:100dvh;min-height:0}

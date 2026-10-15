@@ -4,5 +4,7 @@ import App from './App'
 import './styles.css'
 import './layout.css'
 import './home.css'
+import './feedback.css'
+import './readability.css'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>)

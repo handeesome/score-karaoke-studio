@@ -1,7 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
 import { AudioLines } from 'lucide-react'
-import type { KaraokeFlag, Segment } from '../types'
+import ActionDialog from './ActionDialog'
+import type { KaraokeFlag, Segment, TimingRange } from '../types'
 import { formatTime } from '../utils'
+import { previewTimingEdit, type TimingEdge } from '../timing'
 
 interface WaveformData {
   duration: number
@@ -27,9 +29,14 @@ interface TimelinePanelProps {
   selected: string | null
   time: number
   playing: boolean
+  highlightMode: 'wipe' | 'full'
+  spareTimings?: TimingRange[]
   onSelect: (id: string) => void
   onSeek: (time: number) => void
-  onMoveSegment: (id: string, startTime: number, endTime: number) => void
+  onChooseAudio: () => void
+  onMoveSegment: (id: string, startTime: number, endTime: number, edge: TimingEdge) => void
+  onDeleteTiming: (id: string) => void
+  onInsertTiming: (id: string, at: number) => void
 }
 
 function clock(seconds: number): string {
@@ -45,13 +52,15 @@ function envelopePath(values: number[]): string {
   return `M0,50 L${upper} L${width},50 L${lower} Z`
 }
 
-export default function TimelinePanel({ audioUrl, audioName, duration, flags, segments, selected, time, playing, onSelect, onSeek, onMoveSegment }: TimelinePanelProps) {
+export default function TimelinePanel({ audioUrl, audioName, duration, flags, segments, selected, time, playing, highlightMode, spareTimings = [], onSelect, onSeek, onChooseAudio, onMoveSegment, onDeleteTiming, onInsertTiming }: TimelinePanelProps) {
   const [waveform, setWaveform] = useState<WaveformData | null>(null)
   const [loading, setLoading] = useState(false)
   const [stage, setStage] = useState('')
   const [vocalProgress, setVocalProgress] = useState<VocalProgress | null>(null)
   const [now, setNow] = useState(Date.now())
   const [error, setError] = useState<string | null>(null)
+  const [retry, setRetry] = useState(0)
+  const [helpOpen, setHelpOpen] = useState(false)
   const [zoom, setZoom] = useState(1)
   const [draggedSegment, setDraggedSegment] = useState<{ id: string; startTime: number; endTime: number } | null>(null)
   const draggingPointer = useRef<number | null>(null)
@@ -95,7 +104,7 @@ export default function TimelinePanel({ audioUrl, audioName, duration, flags, se
     void load().catch(reason => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : '波形读取失败') })
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
-  }, [audioUrl])
+  }, [audioUrl, retry])
 
   useEffect(() => {
     if (!loading) return
@@ -110,6 +119,11 @@ export default function TimelinePanel({ audioUrl, audioName, duration, flags, se
 
   const extent = duration > 0 ? duration : waveform?.duration || 90
   const timedSegmentIds = new Set(flags.filter(flag => flag.kind !== 'end').map(flag => flag.segmentId))
+  const assigned = (s: Segment) => Boolean(s.timingSet || timedSegmentIds.has(s.id))
+  const selectedSegment = segments.find(s => s.id === selected)
+  const timingProject = { segments, flags, highlight: { opacity: .32, mode: highlightMode } }
+  const previewSegments = draggedSegment && blockDrag.current ? previewTimingEdit(timingProject, draggedSegment.id,
+    draggedSegment.startTime, draggedSegment.endTime, blockDrag.current.mode, extent) : segments
   const progress = Math.max(0, Math.min(100, time / extent * 100))
   const peakPath = useMemo(() => envelopePath(waveform?.peaks || []), [waveform])
   const levelPath = useMemo(() => envelopePath(waveform?.levels || []), [waveform])
@@ -219,7 +233,7 @@ export default function TimelinePanel({ audioUrl, audioName, duration, flags, se
     if (!drag || drag.pointerId !== event.pointerId) return
     if (drag.moved) {
       const position = blockPosition(drag, event.clientX)
-      if (position.startTime !== drag.startTime || position.endTime !== drag.endTime) onMoveSegment(drag.id, position.startTime, position.endTime)
+      if (position.startTime !== drag.startTime || position.endTime !== drag.endTime) onMoveSegment(drag.id, position.startTime, position.endTime, drag.mode)
     }
     blockDrag.current = null
     setDraggedSegment(null)
@@ -227,6 +241,10 @@ export default function TimelinePanel({ audioUrl, audioName, duration, flags, se
   }
 
   return <div className="timeline-panel" ref={panelRef} aria-label="人声波形时间轴，滚轮缩放">
+    <div className="timeline-editbar"><strong>时间轴</strong><span>{highlightMode === 'full' ? '整框：拖动分界线，两边时长一起调整' : '从左到右：可留空位，也可重叠'}</span>{selectedSegment && (assigned(selectedSegment)
+      ? <button className="button button-secondary" onClick={() => onDeleteTiming(selectedSegment.id)}>{highlightMode === 'full' ? `从第 ${segments.indexOf(selectedSegment) + 1} 句重新打点` : `移除第 ${segments.indexOf(selectedSegment) + 1} 句时间`}</button>
+      : highlightMode === 'wipe' ? <><button className="button button-primary" onClick={() => onInsertTiming(selectedSegment.id, time)}>在当前位置插入第 {segments.indexOf(selectedSegment) + 1} 句</button><button className="button button-secondary" onClick={() => onInsertTiming(selectedSegment.id, selectedSegment.startTime)}>放回原来时间</button></>
+        : <>{spareTimings.length > 0 && <button className="button button-primary" onClick={() => onInsertTiming(selectedSegment.id, spareTimings[0].startTime)}>放入下一个未分配时间段</button>}<span className="timeline-pending">第 {segments.indexOf(selectedSegment) + 1} 句待打点，歌谱框已保留</span></>)}</div>
     <div className="timeline-track">
       <div className="wave-label" title={audioName || '未导入音频'}><AudioLines size={13}/><span>{audioName || '未导入音频'}</span></div>
       <div className="timeline-scroll" ref={scrollRef}>
@@ -236,17 +254,19 @@ export default function TimelinePanel({ audioUrl, audioName, duration, flags, se
           <div className="wave-track">
             <div className="wave-stage" style={{ backgroundSize: `${100 / tickCount}% 100%` }} onPointerDown={startSeek} onPointerMove={moveSeek} onPointerUp={endSeek} onPointerCancel={event => { if (draggingPointer.current === event.pointerId) draggingPointer.current = null }} onLostPointerCapture={() => { draggingPointer.current = null }} role="slider" aria-label="音频时间轴，点击或拖动定位" aria-valuemin={0} aria-valuemax={Math.round(extent)} aria-valuenow={Math.round(time)} tabIndex={audioName ? 0 : -1} onKeyDown={event => { if (event.key === 'ArrowLeft') { event.preventDefault(); onSeek(Math.max(0, time - 1)) } else if (event.key === 'ArrowRight') { event.preventDefault(); onSeek(Math.min(extent, time + 1)) } }}>
               {waveform && <svg className="waveform-svg" viewBox={`0 0 ${waveform.levels.length} 100`} preserveAspectRatio="none" aria-hidden="true"><path d={peakPath} className="waveform-peaks"/><path d={levelPath} className="waveform-levels"/></svg>}
+              {spareTimings.map((slot, index) => <button key={`${slot.startTime}-${slot.endTime}-${index}`} className="timeline-spare" style={{ left: `${slot.startTime / extent * 100}%`, width: `${(slot.endTime - slot.startTime) / extent * 100}%` }} title={`未分配时间 ${formatTime(slot.startTime)} 至 ${formatTime(slot.endTime)}`} onPointerDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); onSeek(slot.startTime); if (selectedSegment && !assigned(selectedSegment)) onInsertTiming(selectedSegment.id, slot.startTime) }}>空位</button>)}
               {!waveform && (loading ? <div className="vocal-progress" aria-label="人声分离进度">
                 <div className="vocal-progress-heading"><span role="status">{stage}</span><span>{vocalProgress?.progress != null ? `${Math.floor(vocalProgress.progress)}%` : '准备中'}</span></div>
                 <div className={`vocal-progress-bar ${vocalProgress?.progress == null ? 'indeterminate' : ''}`} role="progressbar" aria-label="人声分离" aria-valuemin={0} aria-valuemax={100} aria-valuenow={vocalProgress?.progress ?? undefined}><span style={vocalProgress?.progress != null ? { width: `${vocalProgress.progress}%` } : undefined}/></div>
-                <div className="vocal-progress-detail"><span>已用 {clock(elapsed)}{vocalProgress?.completedSegments ? ` · 已完成 ${vocalProgress.completedSegments} 段` : ''}</span><span>{quietSeconds >= 120 ? '当前阶段耗时较长，可检查 CPU 和内存占用' : '完成一段后更新进度'}</span></div>
-              </div> : <div className="waveform-placeholder">{error || '导入 MP3 后显示人声波形'}</div>)}
-              {segments.map((segment, index) => { const shown = draggedSegment?.id === segment.id ? draggedSegment : segment; const assigned = segment.timingSet || timedSegmentIds.has(segment.id); return <button key={segment.id} className={`timeline-block ${selected === segment.id ? 'current' : ''} ${assigned ? '' : 'unassigned'}`} style={{ left: `${Math.max(0, Math.min(100, shown.startTime / extent * 100))}%`, width: `${Math.max(0, Math.min(100, shown.endTime / extent * 100)) - Math.max(0, Math.min(100, shown.startTime / extent * 100))}%` }} title={assigned ? `乐句 ${index + 1} · ${formatTime(shown.startTime)}–${formatTime(shown.endTime)}` : `乐句 ${index + 1} · 待设置时间`} onPointerDown={event => startBlockDrag(event, segment)} onPointerMove={moveBlock} onPointerUp={endBlockDrag} onPointerCancel={() => { blockDrag.current = null; setDraggedSegment(null) }} onLostPointerCapture={() => { blockDrag.current = null; setDraggedSegment(null) }} onClick={event => { event.stopPropagation(); onSelect(segment.id) }}><span className="timeline-resize-grip start" aria-hidden="true"/><span className="timeline-block-text">乐句 {String(index + 1).padStart(2, '0')}</span><span className="timeline-resize-grip end" aria-hidden="true"/></button> })}
+                <div className="vocal-progress-detail"><span>已用 {clock(elapsed)}{vocalProgress?.completedSegments ? ` · 已完成 ${vocalProgress.completedSegments} 段` : ''}</span>{quietSeconds >= 120 ? <button className="vocal-help" onPointerDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); setHelpOpen(true) }}>为什么还没完成？</button> : <span>完成一段后更新进度</span>}</div>
+              </div> : error ? <div className="waveform-feedback" onPointerDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()}><div className="feedback-panel feedback-error" role="alert"><strong>人声波形暂时不可用</strong><p>可以重试读取，或继续播放音频手动打点。</p><button className="button button-secondary" onClick={() => setRetry(n => n + 1)}>重试读取波形</button><button className="button button-secondary" onClick={() => setHelpOpen(true)}>查看原因</button></div></div> : <div className="waveform-placeholder"><button className="button button-secondary" onPointerDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); onChooseAudio() }}>选择音频，显示人声波形</button></div>)}
+              {segments.map((segment, index) => { if (!assigned(segment)) return null; const shown = previewSegments[index]; return <button key={segment.id} data-segment-id={segment.id} className={`timeline-block ${selected === segment.id ? 'current' : ''}`} style={{ left: `${Math.max(0, Math.min(100, shown.startTime / extent * 100))}%`, width: `${Math.max(0, Math.min(100, shown.endTime / extent * 100)) - Math.max(0, Math.min(100, shown.startTime / extent * 100))}%` }} title={`乐句 ${index + 1} · ${formatTime(shown.startTime)}–${formatTime(shown.endTime)}`} aria-label={`乐句 ${index + 1}，${formatTime(shown.startTime)} 至 ${formatTime(shown.endTime)}，${highlightMode === 'full' ? '按 Delete 从这句重新打点' : '按 Delete 仅移除这句时间'}`} onPointerDown={event => startBlockDrag(event, segment)} onPointerMove={moveBlock} onPointerUp={endBlockDrag} onPointerCancel={() => { blockDrag.current = null; setDraggedSegment(null) }} onLostPointerCapture={() => { blockDrag.current = null; setDraggedSegment(null) }} onClick={event => { event.stopPropagation(); onSelect(segment.id) }} onContextMenu={event => { event.preventDefault(); event.stopPropagation(); onSelect(segment.id); onDeleteTiming(segment.id) }} onKeyDown={event => { if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); event.stopPropagation(); onDeleteTiming(segment.id) } }}><span className="timeline-resize-grip start" aria-hidden="true"/><span className="timeline-block-text">{String(index + 1).padStart(2, '0')}</span><span className="timeline-resize-grip end" aria-hidden="true"/></button> })}
               <div className="timeline-cursor" style={{ left: `${Math.max(0, Math.min(100, time / extent * 100))}%` }}/>
             </div>
           </div>
         </div>
       </div>
     </div>
+    {helpOpen && <ActionDialog notice={error ? { title: '人声波形读取失败', description: '可以重试读取。波形不可用时，仍可播放音频并手动打点，不需要清空已有标注。', tone: 'error', details: error, primary: { label: '重试读取波形', onClick: () => setRetry(n => n + 1) } } : { title: '人声分离可能需要较长时间', description: '进度会在每段处理完成后更新。可以继续使用其他功能。\n如果长时间没有变化，可按 Ctrl + Shift + Esc 打开任务管理器，查看软件和 Windows 更新是否占用了较多 CPU。已有分离结果会保存，下次打开会直接读取。', tone: 'info', closeLabel: '返回继续使用' }} onClose={() => setHelpOpen(false)}/>}
   </div>
 }

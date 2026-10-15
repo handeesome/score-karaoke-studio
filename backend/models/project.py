@@ -41,6 +41,17 @@ class ProjectSegment(BaseModel):
         return self
 
 
+class TimingRange(BaseModel):
+    startTime: float = Field(ge=0)
+    endTime: float = Field(gt=0)
+
+    @model_validator(mode="after")
+    def valid_times(self):
+        if self.startTime >= self.endTime:
+            raise ValueError("未分配时间段的结束时间必须晚于开始时间")
+        return self
+
+
 class ProjectDocument(BaseModel):
     version: int = 1
     projectName: str = "未命名歌曲"
@@ -51,6 +62,7 @@ class ProjectDocument(BaseModel):
     segments: list[ProjectSegment]
     partitions: list[dict] = []
     flags: list[dict] = []
+    spareTimings: list[TimingRange] = []
     audioDuration: float | None = Field(default=None, gt=0)
     export: dict = {"preset": "landscape", "width": 1920, "height": 1080, "fps": 30, "scoreZoom": 1.0}
     highlight: dict = {"opacity": 0.32, "mode": "wipe"}

@@ -1,9 +1,9 @@
 {
   "name": "score-karaoke-studio",
   "private": true,
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
-  "scripts": { "build": "tsc -b && vite build", "test": "node --test tests/partitions.test.cjs" },
+  "scripts": { "build": "tsc -b && vite build", "test": "node --test tests/partitions.test.cjs tests/timing.test.cjs" },
   "dependencies": { "lucide-react": "^0.468.0", "react": "^18.3.1", "react-dom": "^18.3.1" },
   "devDependencies": { "@types/react": "^18.3.12", "@types/react-dom": "^18.3.1", "@vitejs/plugin-react": "^4.3.4", "typescript": "~5.6.2", "vite": "^5.4.11" }
 }

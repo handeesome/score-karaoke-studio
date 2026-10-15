@@ -28,10 +28,12 @@ export function recoverFlagsFromTiming(project: Project): Project {
   if (!project.segments.length || project.flags?.length) return project
   const calibrated: Segment[] = []
   for (const [index, segment] of project.segments.entries()) {
+    // Explicit false also means the user removed this item from the timeline.
+    if (segment.timingSet === false) continue
     const defaultByIndex = Math.abs(segment.startTime - index * 4) < .001 && Math.abs(segment.endTime - (index + 1) * 4) < .001
     const defaultAtZero = Math.abs(segment.startTime) < .001 && Math.abs(segment.endTime - 4) < .001
-    if (defaultByIndex || defaultAtZero || segment.endTime <= segment.startTime ||
-      (calibrated.length && segment.startTime < calibrated[calibrated.length - 1].startTime - .05)) break
+    if (segment.endTime <= segment.startTime || (!segment.timingSet && (defaultByIndex || defaultAtZero ||
+      (calibrated.length && segment.startTime < calibrated[calibrated.length - 1].startTime - .05)))) break
     calibrated.push(segment)
   }
   if (!calibrated.length) return project
