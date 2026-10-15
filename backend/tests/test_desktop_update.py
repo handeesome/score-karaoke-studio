@@ -21,16 +21,16 @@ class UpdateTests(unittest.TestCase):
     def test_select_newest_stable_even_if_latest_is_old_full_installer(self):
         releases = [self.release('0.1.0'), self.release('0.1.2'), self.release('0.1.3', prerelease=True),
                     self.release('0.1.4', draft=True)]
-        self.assertEqual(choose_update(releases)['version'], '0.1.2')
+        self.assertEqual(choose_update(releases, '0.1.1')['version'], '0.1.2')
         self.assertIsNone(choose_update(releases, '0.1.2'))
 
     def test_unverified_or_foreign_asset_is_not_offered(self):
         item = self.release()
         item['assets'][0]['digest'] = None
-        self.assertIsNone(choose_update([item]))
+        self.assertIsNone(choose_update([item], '0.1.1'))
         item = self.release()
         item['assets'][0]['browser_download_url'] = 'https://example.com/update.zip'
-        self.assertIsNone(choose_update([item]))
+        self.assertIsNone(choose_update([item], '0.1.1'))
 
     def archive(self, extra=None, base='0.1.0'):
         output = io.BytesIO()

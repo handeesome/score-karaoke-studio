@@ -14,6 +14,29 @@ import zipfile
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def create_archive(stage, archive, version, base_version):
+    readme = '''谱间小更新包
+适用于已有 v0.1.0 的 Windows x64 软件。
+1. 关闭谱间软件。
+2. 将本 ZIP 的全部内容解压到现有 Pujian.exe 所在文件夹，选择覆盖同名文件。
+3. 重新打开 Pujian.exe。在整框高亮模式下，可用整页横线、整页竖线与框内竖切分区。
+软件启动时会联网检查更新，有新版才显示更新按钮；点击后下载、校验并安装，完成后自动重新打开。
+已有 v0.1.1 的用户可直接在软件内点击更新；v0.1.0 需手动覆盖一次。断网不影响使用。
+模型与用户数据无需重新下载；这不是独立安装包，新电脑需先下载完整发行包。
+'''
+    partial = archive.with_suffix('.zip.partial')
+    with zipfile.ZipFile(partial, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as output:
+        output.write(stage / 'Pujian.exe', 'Pujian.exe')
+        for file in (ROOT / 'dist').rglob('*'):
+            if file.is_file():
+                output.write(file, '_internal/dist/' + file.relative_to(ROOT / 'dist').as_posix())
+        output.write(ROOT / 'desktop/修复启动.cmd', 'Repair-Startup.cmd')
+        output.write(ROOT / 'desktop/update-install.ps1', '_internal/update-install.ps1')
+        output.writestr('update-info.json', json.dumps({'format': 1, 'version': version, 'baseVersion': base_version}, indent=2))
+        output.writestr('更新说明.txt', readme)
+    partial.replace(archive)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--base-directory', type=Path, required=True,
@@ -67,26 +90,7 @@ pyz = PYZ(a.pure, name={str(stage / 'project-final.pyz')!r})'''
                     str(spec_path)], cwd=ROOT, check=True)
     # With exclude_binaries=True PyInstaller writes EXE under the work directory.
     shutil.copy2(stage / 'work' / 'Pujian-update' / 'Pujian.exe', stage / 'Pujian.exe')
-    readme = '''谱间小更新包
-适用于已有 v0.1.0 的 Windows x64 软件。
-1. 关闭谱间软件。
-2. 将本 ZIP 的全部内容解压到现有 Pujian.exe 所在文件夹，选择覆盖同名文件。
-3. 重新打开 Pujian.exe。人声分离会显示分段进度和已用时间。
-软件启动时会联网检查更新，有新版才显示更新按钮；点击后下载、校验并安装，完成后自动重新打开。
-本次需手动覆盖一次，后续兼容更新可在软件内完成。断网不影响使用。
-模型与用户数据无需重新下载；这不是独立安装包，新电脑需先下载完整发行包。
-'''
-    partial = archive.with_suffix('.zip.partial')
-    with zipfile.ZipFile(partial, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as output:
-        output.write(stage / 'Pujian.exe', 'Pujian.exe')
-        for file in (ROOT / 'dist').rglob('*'):
-            if file.is_file():
-                output.write(file, '_internal/dist/' + file.relative_to(ROOT / 'dist').as_posix())
-        output.write(ROOT / 'desktop/修复启动.cmd', 'Repair-Startup.cmd')
-        output.write(ROOT / 'desktop/update-install.ps1', '_internal/update-install.ps1')
-        output.writestr('update-info.json', json.dumps({'format': 1, 'version': version, 'baseVersion': info['version']}, indent=2))
-        output.writestr('更新说明.txt', readme)
-    partial.replace(archive)
+    create_archive(stage, archive, version, info['version'])
     print(f'Update ZIP: {archive}', flush=True)
 
 

@@ -8,6 +8,9 @@ import AutoBoxDialog from './components/AutoBoxDialog'
 import ProgressDialog from './components/ProgressDialog'
 import HomeImportView from './components/HomeImportView'
 import DesktopUpdate from './components/DesktopUpdate'
+import PartitionEditor from './components/PartitionEditor'
+import { emptyPartition, removeGuide, syncPartition, type PartitionTool } from './partitions'
+import type { PagePartition } from './types'
 import { initialProject } from './types'
 import { copyRegionToNextLine, loadInkPage } from './scoreInk'
 import { bindTimingToScoreOrder, calculateCameraTarget, calculateKaraokeProgress, fitRegion, formatTime, migrateLegacyCuts, recoverFlagsFromTiming, regionPositionKey, regionReveal, segmentRegions, sharedRegionKey } from './utils'
@@ -48,7 +51,8 @@ function App() {
   const [audioImporting, setAudioImporting] = useState(false)
   const [duplicateBusy, setDuplicateBusy] = useState(false)
   const [analysisProgress, setAnalysisProgress] = useState<{ kind: 'boxes' | 'align'; percent: number; stage: string } | null>(null)
-  const [tool, setTool] = useState<'select' | 'row' | 'cut'>('select')
+  const [tool, setTool] = useState<'select' | 'row' | 'cut' | PartitionTool>('select')
+  const [selectedLine, setSelectedLine] = useState<string | null>(null)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
   const scoreInput = useRef<HTMLInputElement>(null)
@@ -125,6 +129,22 @@ function App() {
   const visibleFlags = recoverFlagsFromTiming(project).flags || []
   const timedIds = new Set(visibleFlags.filter(flag => flag.kind !== 'end').map(flag => flag.segmentId))
   const highlightMode = project.highlight?.mode === 'full' ? 'full' : 'wipe'
+  const pagePartition = project.partitions?.find(item => item.pageId === currentPage?.id) || emptyPartition(currentPage?.id || '')
+  const needsFreshPartition = !pagePartition.horizontal.length && !pagePartition.vertical.length && project.segments.some(segment => segment.pageId === currentPage?.id && !segment.partitionKey)
+  const partitionTool: PartitionTool = ['line-h', 'line-v', 'cell-cut', 'line-edit'].includes(tool) ? tool as PartitionTool : 'line-h'
+  useEffect(() => {
+    if (highlightMode === 'full' && ['row', 'select', 'cut'].includes(tool)) setTool('line-h')
+    if (highlightMode === 'wipe' && !['row', 'select', 'cut'].includes(tool)) setTool('select')
+  }, [highlightMode, tool])
+  useEffect(() => { setSelectedLine(null) }, [activePage, highlightMode])
+  const changePartition = (partition: PagePartition) => {
+    lastHistoryAt.current = 0
+    setProject(previous => syncPartition(previous, partition))
+  }
+  const deletePartitionLine = () => {
+    if (!selectedLine) return
+    changePartition(removeGuide(pagePartition, selectedLine)); setSelectedLine(null); selectOne(null)
+  }
   const activeSegment = useMemo(() => {
     const timed = project.segments.filter(segment => segment.timingSet || timedIds.has(segment.id))
       .sort((a, b) => a.startTime - b.startTime || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
@@ -210,7 +230,7 @@ function App() {
   }, [exportOpen, project.projectId, previewTime, exportSettings.width, exportSettings.height, exportSettings.scoreZoom])
 
   const flash = (text: string) => { setMessage(text); window.setTimeout(() => setMessage(''), 2400) }
-  const selectOne = (id: string | null) => { setSelected(id); setSelectedIds(id ? [id] : []); setMergeTarget(null); setOrderDraft(null) }
+  const selectOne = (id: string | null) => { setSelectedLine(null); setSelected(id); setSelectedIds(id ? [id] : []); setMergeTarget(null); setOrderDraft(null) }
   const selectSegment = (id: string, additive: boolean) => {
     if (!additive) { selectOne(id); return }
     const ids = selectedIds.includes(id) ? selectedIds.filter(selectedId => selectedId !== id) : [...selectedIds, id]
@@ -253,6 +273,14 @@ function App() {
     }) }
   })
   const deleteSegment = (id: string) => {
+    const source = project.segments.find(segment => segment.id === id)
+    if (source?.partitionKey) {
+      const partition = project.partitions?.find(item => item.pageId === source.pageId)
+      if (partition) changePartition({ ...partition, excluded: [...partition.excluded, source.partitionKey] })
+      selectOne(null)
+      flash('该分区已跳过；用“调整分隔线”点击空白区可恢复')
+      return
+    }
     setProject(p => {
       const segments = p.segments.filter(s => s.id !== id)
       const flags = p.flags?.filter(flag => flag.segmentId !== id)
@@ -279,7 +307,7 @@ function App() {
       audioRef.current?.pause()
       if (audioRef.current) audioRef.current.currentTime = 0
       const scoreName = data.filename.replace(/\.[^.]+$/, '')
-      setProject(p => ({ ...p, projectId: data.projectId, projectName: scoreName, source: { ...p.source, pdf: files.length > 1 ? `${scoreName} 等 ${files.length} 张` : data.filename }, pages, segments: [], flags: [] }))
+      setProject(p => ({ ...p, projectId: data.projectId, projectName: scoreName, source: { ...p.source, pdf: files.length > 1 ? `${scoreName} 等 ${files.length} 张` : data.filename }, pages, segments: [], flags: [], partitions: [] }))
       setActivePage(0); selectOne(null); setTime(0); setPlaying(false); setTool('row')
       flash(replacing ? '已替换乐谱，原有标注已清空' : `已导入 ${pages.length} 页乐谱`)
     } catch (error) { flash(error instanceof Error ? error.message : '无法连接渲染服务，请先启动后端') }
@@ -361,22 +389,24 @@ function App() {
       if (event.key === 'Enter') { event.preventDefault(); addFlag() }
       if (event.key === 'ArrowLeft') { event.preventDefault(); seek(time - (event.shiftKey ? 1 : .1)) }
       if (event.key === 'ArrowRight') { event.preventDefault(); seek(time + (event.shiftKey ? 1 : .1)) }
-      if (event.key.toLowerCase() === 'n') setTool('row')
-      if (event.key.toLowerCase() === 'd' && selected) { event.preventDefault(); void duplicateBelow() }
-      if ((event.key === 'Delete' || event.key === 'Backspace') && selected && !event.ctrlKey && !event.altKey && !event.metaKey && !event.repeat) {
+      if (event.key.toLowerCase() === 'n') setTool(highlightMode === 'full' ? 'line-h' : 'row')
+      if (event.key.toLowerCase() === 'd' && selected && highlightMode !== 'full') { event.preventDefault(); void duplicateBelow() }
+      if ((event.key === 'Delete' || event.key === 'Backspace') && (selected || selectedLine) && !event.ctrlKey && !event.altKey && !event.metaKey && !event.repeat) {
         event.preventDefault()
-        deleteSegment(selected)
+        if (highlightMode === 'full' && selectedLine) deletePartitionLine()
+        else if (selected) deleteSegment(selected)
       }
       if (event.key.toLowerCase() === 's' && selected) updateSegment(selected, { startTime: time })
       if (event.key.toLowerCase() === 'e' && selected) updateSegment(selected, { endTime: time })
     }
     window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey)
-  }, [time, selected, selectedIds, duration, project, resetOpen, autoCandidates, boxCandidates, exportOpen])
+  }, [time, selected, selectedIds, selectedLine, duration, project, resetOpen, autoCandidates, boxCandidates, exportOpen])
 
   function resetAnnotations() {
     if (audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0 }
     lastHistoryAt.current = 0
-    setProject(p => ({ ...p, segments: [], flags: [] }))
+    setProject(p => ({ ...p, segments: [], flags: [], partitions: [] }))
+    setSelectedLine(null)
     selectOne(null); setActivePage(0); setTime(0); setTool(project.pages.length ? 'row' : 'select')
     setResetOpen(false)
     flash('标注已清空，可按 Ctrl+Z 恢复')
@@ -390,6 +420,7 @@ function App() {
   }
   const mergeSegments = (selectedSegmentIds: string[]) => {
     const picked = project.segments.filter(segment => selectedSegmentIds.includes(segment.id))
+    if (picked.some(segment => segment.partitionKey)) { flash('直线分区请在整框模式下删除分隔线来合并'); return }
     if (picked.length < 2) { flash('请先框选至少两条乐句'); return }
     const firstIndex = project.segments.findIndex(segment => segment.id === picked[0].id)
     const contiguous = picked.every((segment, index) => project.segments[firstIndex + index]?.id === segment.id)
@@ -427,7 +458,7 @@ function App() {
     const copies = sources.map((source, index): Segment => {
       const startTime = Math.max(0, Math.min(audioEnd - .1, lastAssignedEnd + index * 1.1))
       const regions = segmentRegions(source).map(item => ({ pageId: item.pageId, region: { ...item.region } }))
-      return { ...source, id: `repeat-${Date.now()}-${index}`, pageId: regions[0].pageId, region: regions[0].region,
+      return { ...source, partitionKey: undefined, id: `repeat-${Date.now()}-${index}`, pageId: regions[0].pageId, region: regions[0].region,
         regions: regions.length > 1 ? regions : undefined, startTime, endTime: Math.min(audioEnd, startTime + 1), timingSet: false }
     })
     lastHistoryAt.current = 0
@@ -470,7 +501,7 @@ function App() {
     const copies = sources.map((source, index): Segment => {
       const regions = copyRegions[index]
       const single = sources.length === 1
-      return { ...source, id: `segment-${Date.now()}-${index}`, pageId: regions[0].pageId,
+      return { ...source, partitionKey: undefined, id: `segment-${Date.now()}-${index}`, pageId: regions[0].pageId,
         region: regions[0].region, regions: regions.length > 1 ? regions : undefined,
         startTime: single ? source.endTime : 0,
         endTime: single ? source.endTime + (source.endTime - source.startTime) : 4,
@@ -488,6 +519,7 @@ function App() {
     flash(sources.length > 1 ? `已复制 ${copies.length} 个标注到下一行；新乐句待打点` : '已复制标注到下一行')
   }
   const splitSegment = (segment: Segment, part: number, event: React.PointerEvent<SVGGElement>) => {
+    if (segment.partitionKey) { flash('请在整框模式下使用框内竖切'); return }
     if (part !== 0 || segmentRegions(segment).length > 1) { flash('合并的乐句包含多个框，请先调整各框位置'); return }
     const rect = pageRef.current!.getBoundingClientRect()
     const pageX = (event.clientX - rect.left) / rect.width
@@ -756,9 +788,16 @@ function App() {
     <div className="main-layout">
       <main className="workspace">
         <div className="workspace-toolbar"><div className="toolbar-files"><button className="file-chip" title={project.source.pdf ? `点击重新选择乐谱：${project.source.pdf}` : '选择 PDF 或 JPG、PNG、WebP 乐谱'} onClick={() => scoreInput.current?.click()}><FileImage size={14}/><span>歌谱</span><strong>{fileName(project.source.pdf) || '选择乐谱'}</strong></button><button className="file-chip" title={project.source.audio ? `点击重新选择 MP3：${project.source.audio}` : '选择 MP3 音频'} onClick={() => audioInput.current?.click()}><FileAudio2 size={14}/><span>MP3</span><strong>{fileName(project.source.audio) || '选择音频'}</strong></button></div><div className="toolbar-right"><div className="page-count">{project.pages.length ? <><span>第</span><strong>{activePage + 1}</strong><span>/ {project.pages.length} 页</span><button className="page-arrow" disabled={activePage === 0} onClick={() => setActivePage(activePage - 1)}><ChevronLeft size={15}/></button><button className="page-arrow" disabled={activePage >= project.pages.length - 1} onClick={() => setActivePage(activePage + 1)}><ChevronRight size={15}/></button></> : <span>等待导入乐谱</span>}</div><span className="toolbar-sep"/><div className="zoom-control"><button title="缩小乐谱" onClick={() => changeZoom(-.1)}><ZoomOut size={15}/></button><button className="zoom-value" title="点击恢复自动适配" onClick={() => setZoom(null)}>{zoom === null ? '自动适配' : `${Math.round(zoom * 100)}%`}</button><button title="放大乐谱" onClick={() => changeZoom(.1)}><ZoomIn size={15}/></button></div></div></div>
-        <div className="segmentation-toolbar"><span>切分乐谱</span><button className={`button compact ${tool === 'row' ? 'button-active' : 'button-quiet'}`} title="添加标注（N）" onClick={() => setTool(tool === 'row' ? 'select' : 'row')}><span className="horizontal-line-icon"/>添加标注</button><button className={`button compact ${tool === 'cut' ? 'button-active' : 'button-quiet'}`} onClick={() => setTool(tool === 'cut' ? 'select' : 'cut')}><span className="vertical-line-icon"/>竖切成框</button><button className="button button-quiet compact" disabled={boxBusy || !project.pages.length} onClick={() => void startAutoBoxes()}>{boxBusy ? <LoaderCircle className="spin" size={13}/> : <WandSparkles size={13}/>} {boxBusy ? '正在框选' : '自动框选'}</button><button className="button button-quiet compact" disabled={duplicateBusy || !selected || !project.segments.some(segment => segment.id === selected)} onClick={() => void duplicateBelow()} title={selectedIds.length > 1 ? `复制已选的 ${selectedIds.length} 个标注到下一行` : "复制选中标注到下一行"}><Scissors size={13}/>{duplicateBusy ? '正在复制' : '复制到下一行'}{selectedIds.length > 1 ? ` (${selectedIds.length})` : ""}</button><button className={`button compact ${tool === 'select' ? 'button-active' : 'button-quiet'}`} onClick={() => setTool('select')}>框选乐句</button><button className="button button-quiet compact" disabled={selectedIds.length < 2} onClick={mergeSelected}>合并乐句{selectedIds.length > 1 ? ` (${selectedIds.length})` : ''}</button><button className="button button-active compact auto-align-launch" disabled={autoBusy || !project.pages.length || !project.source.audioUrl} onClick={() => void startAutoAlign()}>{autoBusy ? <LoaderCircle className="spin" size={13}/> : <WandSparkles size={13}/>} {autoBusy ? '正在对齐' : '自动对齐'}</button><button className="button button-quiet compact reset-toolbar" disabled={!project.segments.length && !(project.flags || []).length} onClick={() => setResetOpen(true)}><RotateCcw size={13}/>重新标注</button><small>{autoBusy ? autoStage : boxBusy ? '正在查找歌词行和明显留白' : tool === 'row' ? '从一个角拖到对角，自由决定框的宽和高' : tool === 'cut' ? '点击已有标注框，将它分成左右两个独立框' : '在空白处拖框多选；Shift 点击可追加选择'}</small></div>
+        {highlightMode === 'full' ? <div className="segmentation-toolbar partition-toolbar">
+          <span>直线分区</span>
+          {([['line-h', '整页横线'], ['line-v', '整页竖线'], ['cell-cut', '框内竖切'], ['line-edit', '调整分隔线']] as const).map(([value, label]) =>
+            <button key={value} className={`button compact ${partitionTool === value ? 'button-active' : 'button-quiet'}`} aria-pressed={partitionTool === value} disabled={playing || (needsFreshPartition && (value === 'line-h' || value === 'line-v'))} onClick={() => setTool(value)}>{label}</button>)}
+          <button className="button button-quiet compact" disabled={!selectedLine || playing} onClick={deletePartitionLine}>删除分隔线</button>
+          <button className="button button-quiet compact reset-toolbar" disabled={!project.segments.length && !project.partitions?.some(item => item.horizontal.length || item.vertical.length)} onClick={() => setResetOpen(true)}><RotateCcw size={13}/>重新分区</button>
+          <small>{needsFreshPartition ? '当前页已有标注，可继续打点或框内竖切；要重新画线，请先点“重新分区”' : partitionTool === 'line-h' ? '点击添加横线；先定每行上下，再用左右两条竖线围成分区' : partitionTool === 'line-v' ? '点击添加贯穿整页的竖线，通常左右各一条' : partitionTool === 'cell-cut' ? '点击闭合分区内部，仅切开这一行' : '拖动分隔线调整；点击分区可查看打点，空白分区可跳过'}</small>
+        </div> : <div className="segmentation-toolbar"><span>切分乐谱</span><button className={`button compact ${tool === 'row' ? 'button-active' : 'button-quiet'}`} title="添加标注（N）" onClick={() => setTool(tool === 'row' ? 'select' : 'row')}><span className="horizontal-line-icon"/>添加标注</button><button className={`button compact ${tool === 'cut' ? 'button-active' : 'button-quiet'}`} onClick={() => setTool(tool === 'cut' ? 'select' : 'cut')}><span className="vertical-line-icon"/>竖切成框</button><button className="button button-quiet compact" disabled={boxBusy || !project.pages.length} onClick={() => void startAutoBoxes()}>{boxBusy ? <LoaderCircle className="spin" size={13}/> : <WandSparkles size={13}/>} {boxBusy ? '正在框选' : '自动框选'}</button><button className="button button-quiet compact" disabled={duplicateBusy || !selected || !project.segments.some(segment => segment.id === selected)} onClick={() => void duplicateBelow()} title={selectedIds.length > 1 ? `复制已选的 ${selectedIds.length} 个标注到下一行` : "复制选中标注到下一行"}><Scissors size={13}/>{duplicateBusy ? '正在复制' : '复制到下一行'}{selectedIds.length > 1 ? ` (${selectedIds.length})` : ""}</button><button className={`button compact ${tool === 'select' ? 'button-active' : 'button-quiet'}`} onClick={() => setTool('select')}>框选乐句</button><button className="button button-quiet compact" disabled={selectedIds.length < 2} onClick={mergeSelected}>合并乐句{selectedIds.length > 1 ? ` (${selectedIds.length})` : ''}</button><button className="button button-active compact auto-align-launch" disabled={autoBusy || !project.pages.length || !project.source.audioUrl} onClick={() => void startAutoAlign()}>{autoBusy ? <LoaderCircle className="spin" size={13}/> : <WandSparkles size={13}/>} {autoBusy ? '正在对齐' : '自动对齐'}</button><button className="button button-quiet compact reset-toolbar" disabled={!project.segments.length && !(project.flags || []).length} onClick={() => setResetOpen(true)}><RotateCcw size={13}/>重新标注</button><small>{autoBusy ? autoStage : boxBusy ? '正在查找歌词行和明显留白' : tool === 'row' ? '从一个角拖到对角，自由决定框的宽和高' : tool === 'cut' ? '点击已有标注框，将它分成左右两个独立框' : '在空白处拖框多选；Shift 点击可追加选择'}</small></div>}
         <div className="canvas-area" ref={canvasRef}>
-          {currentPage ? <div className="page-frame" key={currentPage.id} style={{ width: zoom === null ? '58%' : `${Math.round(510 * zoom)}px`, maxWidth: 'calc(100% - 12px)' }}><div ref={pageRef} className={`score-page ${tool === 'row' ? 'drawing' : ''} ${tool === 'cut' ? 'anchoring' : ''} ${tool === 'select' ? 'marquee-mode' : ''} ${playing ? 'previewing' : ''}`} style={{ aspectRatio: `${currentPage.width} / ${currentPage.height}` }} onPointerDown={pagePointerDown} onPointerMove={pagePointerMove} onPointerUp={pagePointerUp} onPointerCancel={pagePointerUp}>
+          {currentPage ? <div className="page-frame" key={currentPage.id} style={{ width: zoom === null ? '58%' : `${Math.round(510 * zoom)}px`, maxWidth: 'calc(100% - 12px)' }}><div ref={pageRef} className={`score-page ${tool === 'row' ? 'drawing' : ''} ${tool === 'cut' ? 'anchoring' : ''} ${tool === 'select' ? 'marquee-mode' : ''} ${playing ? 'previewing' : ''} ${highlightMode === 'full' ? 'partition-mode' : ''}`} style={{ aspectRatio: `${currentPage.width} / ${currentPage.height}` }} onPointerDown={pagePointerDown} onPointerMove={pagePointerMove} onPointerUp={pagePointerUp} onPointerCancel={pagePointerUp}>
               <img src={currentPage.image.startsWith('data:') || currentPage.image.startsWith('blob:') ? currentPage.image : currentPage.image} alt={`乐谱第 ${activePage + 1} 页`} draggable={false}/>
               <svg className="annotation-layer" viewBox="0 0 1000 1414" preserveAspectRatio="none">
                 <defs>
@@ -766,7 +805,7 @@ function App() {
                   <clipPath id="ink-reveal">{activeRegions.map((item, index) => item.pageId === currentPage.id && <rect key={index} x={item.region.x * 1000} y={item.region.y * 1414} width={item.region.width * activeReveal[index] * 1000} height={item.region.height * 1414}/>)}</clipPath>
                 </defs>
                 {activeRegions.some(item => item.pageId === currentPage.id) && progress > 0 && <image href={currentPage.image} x="0" y="0" width="1000" height="1414" preserveAspectRatio="none" filter="url(#ink-recolor)" clipPath="url(#ink-reveal)" pointerEvents="none"/>}
-                {project.segments.flatMap(seg => segmentRegions(seg).map((item, part) => ({ seg, item, part })).filter(entry => entry.item.pageId === currentPage.id)).sort((a, b) => Number(selectedIds.includes(a.seg.id)) - Number(selectedIds.includes(b.seg.id))).map(({ seg, item, part }) => { const r = item.region; const matching = project.segments.filter(candidate => sharedRegionKey(candidate) === sharedRegionKey(seg)); const repeatIndex = matching.findIndex(candidate => candidate.id === seg.id); const x = r.x * 1000; const y = r.y * 1414; const badgeX = x + (x + 68 <= 1000 ? repeatIndex % 2 * 36 : -(repeatIndex % 2) * 36); const badgeY = Math.max(2, y - 29 - Math.floor(repeatIndex / 2) * 26); return <g key={`${seg.id}-${part}`} className={`annotation ${selectedIds.includes(seg.id) ? 'is-selected' : ''}`} onPointerDown={e => { e.stopPropagation(); if (e.shiftKey) { selectSegment(seg.id, true); return }; selectSegment(seg.id, false); if (tool === 'row') return; if (tool === 'cut') { splitSegment(seg, part, e); return }; dragRef.current = { id: seg.id, part, kind: 'move', startX: e.clientX, startY: e.clientY, region: { ...r } }; (e.currentTarget as SVGGElement).setPointerCapture(e.pointerId) }}>
+                {project.segments.flatMap(seg => segmentRegions(seg).map((item, part) => ({ seg, item, part })).filter(entry => entry.item.pageId === currentPage.id)).sort((a, b) => Number(selectedIds.includes(a.seg.id)) - Number(selectedIds.includes(b.seg.id))).map(({ seg, item, part }) => { const r = item.region; const matching = project.segments.filter(candidate => sharedRegionKey(candidate) === sharedRegionKey(seg)); const repeatIndex = matching.findIndex(candidate => candidate.id === seg.id); const x = r.x * 1000; const y = r.y * 1414; const badgeX = x + (x + 68 <= 1000 ? repeatIndex % 2 * 36 : -(repeatIndex % 2) * 36); const badgeY = Math.max(2, y - 29 - Math.floor(repeatIndex / 2) * 26); return <g key={`${seg.id}-${part}`} className={`annotation ${selectedIds.includes(seg.id) ? 'is-selected' : ''}`} onPointerDown={e => { if (highlightMode === 'full') return; e.stopPropagation(); if (e.shiftKey) { selectSegment(seg.id, true); return }; selectSegment(seg.id, false); if (tool === 'row') return; if (tool === 'cut') { splitSegment(seg, part, e); return }; if (seg.partitionKey) return; dragRef.current = { id: seg.id, part, kind: 'move', startX: e.clientX, startY: e.clientY, region: { ...r } }; (e.currentTarget as SVGGElement).setPointerCapture(e.pointerId) }}>
                   <rect className="region-hit-area" x={r.x * 1000} y={r.y * 1414} width={r.width * 1000} height={r.height * 1414} rx="4"/>
                   <rect className="region-outline" x={r.x * 1000} y={r.y * 1414} width={r.width * 1000} height={r.height * 1414} rx="4"/>
                   {editingNumber?.id === seg.id && editingNumber.part === part
@@ -774,13 +813,13 @@ function App() {
                         <input ref={numberInputRef} type="text" inputMode="numeric" aria-label="乐句的新序号" value={editingNumber.value} onChange={event => { replaceNumberOnKey.current = false; setEditingNumber({ ...editingNumber, value: event.target.value.replace(/\D/g, '') }) }} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur() } else if (event.key === 'Escape') { cancelNumberEdit.current = true; setEditingNumber(null) } else if (replaceNumberOnKey.current && /^\d$/.test(event.key) && !event.ctrlKey && !event.metaKey && !event.altKey) { event.preventDefault(); replaceNumberOnKey.current = false; setEditingNumber({ ...editingNumber, value: event.key }) } else if (replaceNumberOnKey.current && (event.key === 'Backspace' || event.key === 'Delete')) { event.preventDefault(); replaceNumberOnKey.current = false; setEditingNumber({ ...editingNumber, value: '' }) } else if (event.key.startsWith('Arrow') || event.key === 'Home' || event.key === 'End') replaceNumberOnKey.current = false }} onBlur={() => { if (!cancelNumberEdit.current && editingNumber?.value) moveSegmentTo(editingNumber.id, editingNumber.value); setEditingNumber(null) }}/>
                       </foreignObject>
                     : <g className="region-number" transform={`translate(${badgeX},${badgeY})`} onPointerDown={event => { event.stopPropagation(); selectSegment(seg.id, event.shiftKey) }} onClick={event => { event.stopPropagation(); if (event.shiftKey) return; cancelNumberEdit.current = false; replaceNumberOnKey.current = true; setEditingNumber({ id: seg.id, part, value: String(project.segments.indexOf(seg) + 1) }) }}><title>单击修改乐句序号</title><rect className="region-number-bg" width="34" height="24" rx="5"/><text className="region-number-text" x="17" y="17" textAnchor="middle">{String(project.segments.indexOf(seg) + 1).padStart(2, '0')}</text></g>}
-                  {selected === seg.id && (['n', 's', 'w', 'e'] as const).map(edge => {
+                  {highlightMode !== 'full' && !seg.partitionKey && selected === seg.id && (['n', 's', 'w', 'e'] as const).map(edge => {
                     const x = r.x * 1000; const y = r.y * 1414
                     const width = r.width * 1000; const height = r.height * 1414
                     const hit = Math.min(14, Math.max(5, Math.min(width, height) / 3))
                     return <rect key={edge} className={`resize-edge edge-${edge}`} x={edge === 'e' ? x + width - hit / 2 : edge === 'w' ? x - hit / 2 : x} y={edge === 's' ? y + height - hit / 2 : edge === 'n' ? y - hit / 2 : y} width={edge === 'n' || edge === 's' ? width : hit} height={edge === 'w' || edge === 'e' ? height : hit} onPointerDown={e => startResize(e, seg, part, edge)}/>
                   })}
-                  {selected === seg.id && (['nw', 'ne', 'se', 'sw'] as const).map(edge => {
+                  {highlightMode !== 'full' && !seg.partitionKey && selected === seg.id && (['nw', 'ne', 'se', 'sw'] as const).map(edge => {
                     const x = (r.x + (edge.includes('w') ? 0 : edge.includes('e') ? r.width : r.width / 2)) * 1000
                     const y = (r.y + (edge.includes('n') ? 0 : edge.includes('s') ? r.height : r.height / 2)) * 1414
                     return <rect key={edge} className={`resize-handle edge-${edge}`} x={x - 8} y={y - 8} width="16" height="16" rx="3" onPointerDown={e => startResize(e, seg, part, edge)}/>
@@ -788,16 +827,19 @@ function App() {
                 </g> })}
                 {draft && <rect className="draft-region" x={draft.x * 1000} y={draft.y * 1414} width={draft.width * 1000} height={draft.height * 1414} rx="4"/>}
                 {marquee && <rect className="marquee-region" x={marquee.x * 1000} y={marquee.y * 1414} width={marquee.width * 1000} height={marquee.height * 1414}/>}
+                {highlightMode === 'full' && !playing && <PartitionEditor key={currentPage.id} partition={pagePartition} tool={partitionTool} blocked={needsFreshPartition} selectedLine={selectedLine}
+                  segments={project.segments.filter(segment => segment.pageId === currentPage.id)} onChange={changePartition}
+                  onLine={setSelectedLine} onSegment={selectOne} onMessage={flash} onLegacyCut={(segment, event) => splitSegment(segment, 0, event)}/>}
               </svg>
             </div><div className="page-caption"><span>第 {activePage + 1} 页</span><span>{currentPage.width} × {currentPage.height} px · 原始比例标注</span></div></div> : <div className="empty-workspace"><div className="empty-art"><div className="music-note note-a">♪</div><div className="music-note note-b">♫</div><div className="empty-paper"><div className="paper-lines">𝅘𝅥𝅮　1 2 3 5　|　6 — 5 3<br/>　小 星 星　　亮 晶 晶</div><div className="paper-highlight"/></div><div className="upload-orbit"><ImagePlus size={20}/></div></div><div className="empty-copy"><span className="eyebrow">从乐谱开始</span><h1>让每一句歌，都有自己的节奏</h1><p>导入 PDF 或 JPG、PNG、WebP 乐谱，再选择音频，<br/>逐行标注歌词位置并校准播放时间。</p></div><p className="empty-start-note">在上方工具栏选择歌谱和音频即可开始</p><div className="supported-note"><span className="check-mini"><Check size={11}/></span>页面按原始尺寸渲染，标注坐标随缩放保持准确</div></div>}
         </div>
       </main>
-      <aside className="right-panel"><div className="right-panel-title"><div><span className="eyebrow">检查器</span><h2>标注属性</h2></div><button className="icon-button"><MoreHorizontal size={17}/></button></div>{selected && project.segments.some(s => s.id === selected) ? (() => { const seg = project.segments.find(s => s.id === selected)!; const index = project.segments.indexOf(seg); const neighbors = [index > 0 ? project.segments[index - 1] : null, project.segments[index + 1] || null].filter((item): item is Segment => Boolean(item)); const targetId = neighbors.some(item => item.id === mergeTarget) ? mergeTarget! : neighbors[0]?.id || ""; return <><div className="inspector-card"><div className="inspector-segment-title"><div className="segment-color-dot"/><div><strong>乐句 {String(project.segments.indexOf(seg) + 1).padStart(2, '0')}</strong><span>页面 {project.pages.findIndex(p => p.id === seg.pageId) + 1} · 左至右</span></div><button className="icon-button tiny" onClick={() => deleteSegment(seg.id)}><X size={15}/></button></div><div className="inspector-order"><label className="field-label" htmlFor="phrase-order">乐句序号</label><div><input id="phrase-order" type="text" inputMode="numeric" value={orderDraft ?? String(index + 1)} onChange={e => setOrderDraft(e.target.value)} onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); moveSegmentTo(seg.id, e.currentTarget.value) } else if (e.key === "Escape") setOrderDraft(null) }}/><button className="button button-secondary" disabled={orderDraft === null || orderDraft === String(index + 1)} onClick={() => moveSegmentTo(seg.id, orderDraft || "")}>移动到此</button></div></div><label className="field-label">开始时间</label><div className="time-input"><Clock3 size={14}/><input value={formatTime(seg.startTime)} onChange={e => { const v = e.target.value.split(':').reduce((a, b) => a * 60 + Number(b), 0); if (Number.isFinite(v)) updateSegment(seg.id, { startTime: v }) }}/><button onClick={() => updateSegment(seg.id, { startTime: time })}>设为当前</button></div><label className="field-label">结束时间</label><div className="time-input"><Clock3 size={14}/><input value={formatTime(seg.endTime)} onChange={e => { const v = e.target.value.split(':').reduce((a, b) => a * 60 + Number(b), 0); if (Number.isFinite(v)) updateSegment(seg.id, { endTime: v }) }}/><button onClick={() => updateSegment(seg.id, { endTime: time })}>设为当前</button></div><div className="field-divider"/><div className="highlight-setting"><div><strong>高亮样式</strong><span>橘红色文字 · 无底色</span></div><div className="yellow-swatch"/></div>{segmentRegions(seg).length > 1 && <div className="inspector-merge"><label className="field-label">框顺序 · {segmentRegions(seg).length} 个框</label><button className="button button-secondary" onClick={() => reverseSegmentRegions(seg.id)}>反转框顺序</button></div>}<div className="inspector-merge"><label className="field-label" htmlFor="merge-target">与哪句合并</label><select id="merge-target" value={targetId} disabled={!neighbors.length} onChange={e => setMergeTarget(e.target.value)}>{neighbors.map(item => { const itemIndex = project.segments.indexOf(item); return <option key={item.id} value={item.id}>乐句 {String(itemIndex + 1).padStart(2, "0")}（{itemIndex < index ? "上一句" : "下一句"}）</option> })}</select><button className="button button-secondary" disabled={!targetId} onClick={() => mergeSegments([seg.id, targetId])}>合并这两句</button></div><div className="inspector-actions"><button className="button button-secondary repeat-region-button" onClick={repeatSelectedRegions}>重复使用选中框{selectedIds.length > 1 ? `（${selectedIds.length}）` : ""}</button><button className="button button-danger-quiet" onClick={() => deleteSegment(seg.id)}>删除标注</button></div></div></> })() : <div className="inspector-empty"><div className="inspector-empty-icon"><WandSparkles size={19}/></div><strong>选择一条标注</strong><p>选中乐谱上的标注区域，<br/>即可调整时间与位置。</p><div className="inspector-hint"><Sparkles size={14}/><span>拖动框内可移动，拖动边线或四角可调整大小</span></div></div>}
+      <aside className="right-panel"><div className="right-panel-title"><div><span className="eyebrow">检查器</span><h2>标注属性</h2></div><button className="icon-button"><MoreHorizontal size={17}/></button></div>{selected && project.segments.some(s => s.id === selected) ? (() => { const seg = project.segments.find(s => s.id === selected)!; const index = project.segments.indexOf(seg); const neighbors = [index > 0 ? project.segments[index - 1] : null, project.segments[index + 1] || null].filter((item): item is Segment => Boolean(item)); const targetId = neighbors.some(item => item.id === mergeTarget) ? mergeTarget! : neighbors[0]?.id || ""; return <><div className="inspector-card"><div className="inspector-segment-title"><div className="segment-color-dot"/><div><strong>乐句 {String(project.segments.indexOf(seg) + 1).padStart(2, '0')}</strong><span>页面 {project.pages.findIndex(p => p.id === seg.pageId) + 1} · 左至右</span></div><button className="icon-button tiny" onClick={() => deleteSegment(seg.id)}><X size={15}/></button></div><div className="inspector-order"><label className="field-label" htmlFor="phrase-order">乐句序号</label><div><input id="phrase-order" type="text" inputMode="numeric" value={orderDraft ?? String(index + 1)} onChange={e => setOrderDraft(e.target.value)} onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); moveSegmentTo(seg.id, e.currentTarget.value) } else if (e.key === "Escape") setOrderDraft(null) }}/><button className="button button-secondary" disabled={orderDraft === null || orderDraft === String(index + 1)} onClick={() => moveSegmentTo(seg.id, orderDraft || "")}>移动到此</button></div></div><label className="field-label">开始时间</label><div className="time-input"><Clock3 size={14}/><input value={formatTime(seg.startTime)} onChange={e => { const v = e.target.value.split(':').reduce((a, b) => a * 60 + Number(b), 0); if (Number.isFinite(v)) updateSegment(seg.id, { startTime: v }) }}/><button onClick={() => updateSegment(seg.id, { startTime: time })}>设为当前</button></div><label className="field-label">结束时间</label><div className="time-input"><Clock3 size={14}/><input value={formatTime(seg.endTime)} onChange={e => { const v = e.target.value.split(':').reduce((a, b) => a * 60 + Number(b), 0); if (Number.isFinite(v)) updateSegment(seg.id, { endTime: v }) }}/><button onClick={() => updateSegment(seg.id, { endTime: time })}>设为当前</button></div><div className="field-divider"/><div className="highlight-setting"><div><strong>高亮样式</strong><span>橘红色文字 · 无底色</span></div><div className="yellow-swatch"/></div>{segmentRegions(seg).length > 1 && <div className="inspector-merge"><label className="field-label">框顺序 · {segmentRegions(seg).length} 个框</label><button className="button button-secondary" onClick={() => reverseSegmentRegions(seg.id)}>反转框顺序</button></div>}{highlightMode !== 'full' && <div className="inspector-merge"><label className="field-label" htmlFor="merge-target">与哪句合并</label><select id="merge-target" value={targetId} disabled={!neighbors.length} onChange={e => setMergeTarget(e.target.value)}>{neighbors.map(item => { const itemIndex = project.segments.indexOf(item); return <option key={item.id} value={item.id}>乐句 {String(itemIndex + 1).padStart(2, "0")}（{itemIndex < index ? "上一句" : "下一句"}）</option> })}</select><button className="button button-secondary" disabled={!targetId} onClick={() => mergeSegments([seg.id, targetId])}>合并这两句</button></div>}<div className="inspector-actions">{highlightMode !== 'full' && <button className="button button-secondary repeat-region-button" onClick={repeatSelectedRegions}>重复使用选中框{selectedIds.length > 1 ? `（${selectedIds.length}）` : ""}</button>}<button className="button button-danger-quiet" onClick={() => deleteSegment(seg.id)}>{seg.partitionKey ? '跳过此区' : '删除标注'}</button></div></div></> })() : <div className="inspector-empty"><div className="inspector-empty-icon"><WandSparkles size={19}/></div><strong>选择一条标注</strong><p>选中乐谱上的标注区域，<br/>即可调整时间与位置。</p><div className="inspector-hint"><Sparkles size={14}/><span>{highlightMode === 'full' ? '先用横线分行，再画左右两条竖线；点击闭合分区可竖切' : '拖动框内可移动，拖动边线或四角可调整大小'}</span></div></div>}
       </aside>
       <div className="transport-panel"><div className="transport-left"><button className="play-button" onClick={togglePlay}>{playing ? <Pause size={17} fill="currentColor"/> : <Play size={17} fill="currentColor"/>}</button><button className="flag-button" onClick={addFlag} disabled={!project.segments.length || !project.source.audio} title={`下一次打点：${nextFlagLabel === "收尾" ? "最后一句结束" : nextFlagLabel === "完成" ? "已完成" : `乐句 ${nextFlagLabel}`}`}><Flag size={14}/><span>打点</span><em>{nextFlagLabel}</em></button><div className="transport-time"><strong>{formatTime(time)}</strong><span>/ {formatTime(duration)}</span></div><div className="transport-divider"/><div className="speed-control"><span>速度</span><select defaultValue="1" onChange={e => { if (audioRef.current) audioRef.current.playbackRate = Number(e.target.value) }}><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1">1.0×</option><option value="1.25">1.25×</option></select><ChevronDown size={12}/></div></div><div className="transport-right"><span className="now-playing-dot"/><span>{activeSegment ? `正在预览 · 乐句 ${String(project.segments.indexOf(activeSegment) + 1).padStart(2, '0')}` : project.source.audio ? '音频已就绪' : '等待导入音频'}</span><button className="icon-button tiny"><Settings2 size={16}/></button></div></div>
       <TimelinePanel audioUrl={project.source.audioUrl} audioName={project.source.audio} duration={duration || project.audioDuration || 0} flags={visibleFlags} segments={project.segments} selected={selected} time={time} playing={playing} onSelect={id => { selectOne(id); const pageIndex = project.pages.findIndex(page => page.id === project.segments.find(segment => segment.id === id)?.pageId); if (pageIndex >= 0) setActivePage(pageIndex) }} onSeek={seek} onMoveSegment={(id, startTime, endTime) => updateSegment(id, { startTime, endTime })}/>
     </div>
-    {resetOpen && <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget) setResetOpen(false) }}><div className="reset-dialog" role="dialog" aria-modal="true" aria-labelledby="reset-title" aria-describedby="reset-description"><div className="reset-dialog-icon"><RotateCcw size={20}/></div><h2 id="reset-title">重新标注这首歌？</h2><p id="reset-description">将清空 {project.segments.length} 条乐句标注和 {(project.flags || []).length} 个打点。乐谱与音频会保留。</p><div className="reset-dialog-actions"><button className="button button-secondary" autoFocus onClick={() => setResetOpen(false)}>取消</button><button className="button reset-confirm-button" onClick={resetAnnotations}>清空标注</button></div><small>清空后可立即按 Ctrl+Z 恢复。</small></div></div>}
+    {resetOpen && <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget) setResetOpen(false) }}><div className="reset-dialog" role="dialog" aria-modal="true" aria-labelledby="reset-title" aria-describedby="reset-description"><div className="reset-dialog-icon"><RotateCcw size={20}/></div><h2 id="reset-title">{highlightMode === 'full' ? '重新分区这首歌？' : '重新标注这首歌？'}</h2><p id="reset-description">将清空{highlightMode === 'full' ? '分隔线、' : ' '} {project.segments.length} 条乐句标注和 {(project.flags || []).length} 个打点。乐谱与音频会保留。</p><div className="reset-dialog-actions"><button className="button button-secondary" autoFocus onClick={() => setResetOpen(false)}>取消</button><button className="button reset-confirm-button" onClick={resetAnnotations}>清空标注</button></div><small>清空后可立即按 Ctrl+Z 恢复。</small></div></div>}
     {analysisProgress && <ProgressDialog key={analysisProgress.kind} kind={analysisProgress.kind} percent={analysisProgress.percent} stage={analysisProgress.stage}/>}
     {autoCandidates && <AutoAlignDialog candidates={autoCandidates} existingCount={project.segments.length} playing={playing} onClose={() => setAutoCandidates(null)} onListen={at => { seek(at); const audio = audioRef.current; if (audio) { void audio.play(); setPlaying(true) } }} onPause={() => { audioRef.current?.pause(); setPlaying(false) }} onApply={applyAutoCandidates}/>}
     {boxCandidates && <AutoBoxDialog pages={project.pages} candidates={boxCandidates} existingCount={project.segments.length} onClose={() => setBoxCandidates(null)} onApply={applyAutoBoxes}/>}

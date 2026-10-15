@@ -31,6 +31,7 @@ class ProjectSegment(BaseModel):
     timingSet: bool = False
     direction: str = "left-to-right"
     text: str | None = None
+    partitionKey: str | None = None
     @model_validator(mode="after")
     def valid_times(self):
         if self.startTime >= self.endTime:
@@ -48,6 +49,7 @@ class ProjectDocument(BaseModel):
     source: dict
     pages: list[dict]
     segments: list[ProjectSegment]
+    partitions: list[dict] = []
     flags: list[dict] = []
     audioDuration: float | None = Field(default=None, gt=0)
     export: dict = {"preset": "landscape", "width": 1920, "height": 1080, "fps": 30, "scoreZoom": 1.0}
