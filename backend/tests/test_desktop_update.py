@@ -11,6 +11,12 @@ from desktop.updater import DesktopUpdater, choose_update, extract_patch
 
 
 class UpdateTests(unittest.TestCase):
+    def test_native_bridge_exposes_only_update_methods_not_paths_or_window(self):
+        updater = DesktopUpdater('.', '.', '.')
+        updater._window = Mock()
+        exposed = {name for name in dir(updater) if not name.startswith('_')}
+        self.assertEqual(exposed, {'check_update', 'update_status', 'install_update'})
+
     def release(self, version='0.1.2', **overrides):
         tag = 'v' + version
         name = f'Pujian-{tag}-Windows-x64-update.zip'
@@ -75,14 +81,14 @@ class UpdateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             directory = Path(root)
             updater = DesktopUpdater(directory, directory, directory)
-            updater.window = Mock()
+            updater._window = Mock()
             updater._candidate = {'version': '0.1.2', 'url': 'https://example.com/fixture', 'size': 3, 'sha256': 'a' * 64}
             with patch('desktop.updater.urllib.request.urlopen', side_effect=[io.BytesIO(b'{"ready":true}'), io.BytesIO(b'bad')]), \
                     patch('desktop.updater.subprocess.Popen') as launch, patch('desktop.updater.logging.exception'):
                 updater._install()
             self.assertEqual(updater.update_status()['status'], 'error')
             launch.assert_not_called()
-            updater.window.destroy.assert_not_called()
+            updater._window.destroy.assert_not_called()
             self.assertEqual(list(directory.iterdir()), [])
 
     def test_verified_download_hands_off_then_closes_window(self):
@@ -91,7 +97,7 @@ class UpdateTests(unittest.TestCase):
             (directory / 'build-info.json').write_text('{"version":"0.1.0"}', encoding='utf-8')
             (directory / 'update-install.ps1').write_text('trusted installer', encoding='utf-8')
             updater = DesktopUpdater(directory, directory, directory)
-            updater.window = Mock()
+            updater._window = Mock()
             content = self.archive().getvalue()
             updater._candidate = {'version': '0.1.2', 'url': 'https://example.com/fixture', 'size': len(content),
                                   'sha256': hashlib.sha256(content).hexdigest()}
@@ -100,7 +106,7 @@ class UpdateTests(unittest.TestCase):
                 updater._install()
             self.assertEqual(updater.update_status()['status'], 'installing')
             launch.assert_called_once()
-            updater.window.destroy.assert_called_once()
+            updater._window.destroy.assert_called_once()
             plan = json.loads(next(directory.glob('update-*/plan.json')).read_text(encoding='utf-8'))
             self.assertEqual(plan['files'], ['Pujian.exe', '_internal/dist/index.html'])
 

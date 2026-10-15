@@ -11,6 +11,34 @@ from backend import vocal_waveform
 
 
 class SeparationProgressTests(unittest.TestCase):
+    def test_completed_waveform_is_reused_after_audio_is_renamed(self):
+        first = Path(self.folder.name) / 'old.mp3'
+        renamed = Path(self.folder.name) / 'new.mp3'
+        first.write_bytes(b'identical audio')
+        renamed.write_bytes(first.read_bytes())
+        cache = Path(self.folder.name) / 'vocals'
+        directory = cache / vocal_waveform.cache_key(first)
+        directory.mkdir(parents=True)
+        expected = {'levels': [.1], 'peaks': [.2], 'kind': 'vocal-rms'}
+        (directory / 'waveform.json').write_text(json.dumps(expected), encoding='utf-8')
+        with patch.object(vocal_waveform.subprocess, 'Popen') as worker:
+            self.assertEqual(vocal_waveform.vocal_waveform_for_audio(renamed, cache, lambda *_: None), expected)
+        worker.assert_not_called()
+
+    def test_old_saved_stem_is_reused_when_waveform_is_missing(self):
+        audio = Path(self.folder.name) / 'audio.mp3'
+        audio.write_bytes(b'audio')
+        cache = Path(self.folder.name) / 'vocals'
+        stem = cache / vocal_waveform.cache_key(audio) / 'htdemucs' / 'audio' / 'vocals.mp3'
+        stem.parent.mkdir(parents=True)
+        stem.write_bytes(b'completed saved stem')
+        expected = {'levels': [.1], 'peaks': [.2]}
+        with patch.object(vocal_waveform.subprocess, 'Popen') as worker, \
+                patch.object(vocal_waveform, 'waveform_for_audio', return_value=expected):
+            result = vocal_waveform.vocal_waveform_for_audio(audio, cache, lambda *_: None)
+        worker.assert_not_called()
+        self.assertEqual(result['kind'], 'vocal-rms')
+
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
         self.addCleanup(self.folder.cleanup)

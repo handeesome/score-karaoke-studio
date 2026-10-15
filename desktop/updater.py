@@ -86,8 +86,10 @@ def extract_patch(archive, destination, version, base_version):
 
 class DesktopUpdater:
     def __init__(self, bundle, assets, data):
-        self.bundle, self.assets, self.data = map(Path, (bundle, assets, data))
-        self.window = None
+        # pywebview recursively exposes every public attribute. Paths and the native
+        # window must stay private: traversing the window can block API initialization.
+        self._bundle, self._assets, self._data = map(Path, (bundle, assets, data))
+        self._window = None
         self._lock = threading.Lock()
         self._state = {'status': 'idle'}
         self._candidate = None
@@ -135,9 +137,9 @@ class DesktopUpdater:
                 if not json.load(response)['ready']:
                     raise RuntimeError('请等待当前处理完成后再更新。')
             # Probe write access before downloading; no elevation or silent privilege changes.
-            with tempfile.TemporaryFile(dir=self.bundle):
+            with tempfile.TemporaryFile(dir=self._bundle):
                 pass
-            stage = Path(tempfile.mkdtemp(prefix='update-', dir=self.data))
+            stage = Path(tempfile.mkdtemp(prefix='update-', dir=self._data))
             candidate = dict(self._candidate)
             archive = stage / 'update.zip'
             digest, received = hashlib.sha256(), 0
@@ -152,23 +154,23 @@ class DesktopUpdater:
                     self._set(status='downloading', version=candidate['version'], progress=round(received / candidate['size'] * 100))
             if received != candidate['size'] or digest.hexdigest() != candidate['sha256']:
                 raise ValueError('更新包校验失败，请重试。')
-            base = json.loads((self.bundle / 'build-info.json').read_text(encoding='utf-8'))['version']
+            base = json.loads((self._bundle / 'build-info.json').read_text(encoding='utf-8'))['version']
             files = extract_patch(archive, stage / 'files', candidate['version'], base)
             with urllib.request.urlopen('http://127.0.0.1:18765/api/desktop/update-ready', timeout=5) as response:
                 if not json.load(response)['ready']:
                     raise RuntimeError('请等待当前处理完成后再更新。')
             # Use this version's trusted installer, never execute a downloaded script directly.
             import shutil
-            shutil.copy2(self.assets / 'update-install.ps1', stage / 'install.ps1')
+            shutil.copy2(self._assets / 'update-install.ps1', stage / 'install.ps1')
             plan = stage / 'plan.json'
-            plan.write_text(json.dumps({'pid': os.getpid(), 'bundle': str(self.bundle), 'stage': str(stage),
-                                       'data': str(self.data), 'files': files}), encoding='utf-8')
+            plan.write_text(json.dumps({'pid': os.getpid(), 'bundle': str(self._bundle), 'stage': str(stage),
+                                       'data': str(self._data), 'files': files}), encoding='utf-8')
             powershell = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
             subprocess.Popen([str(powershell), '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
                               '-File', str(stage / 'install.ps1'), '-Plan', str(plan)],
-                             creationflags=subprocess.CREATE_NO_WINDOW, cwd=self.data)
+                             creationflags=subprocess.CREATE_NO_WINDOW, cwd=self._data)
             self._set(status='installing')
-            self.window.destroy()
+            self._window.destroy()
         except Exception as error:
             logging.exception('Update installation failed')
             if 'stage' in locals():

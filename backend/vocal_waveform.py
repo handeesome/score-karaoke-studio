@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -57,6 +58,7 @@ def _generate_vocal_waveform(path: Path, cache_root: Path, update: Callable[[str
     work_dir = cache_root / cache_key(path)
     cached = work_dir / "waveform.json"
     if cached.is_file():
+        logging.info("Vocal cache hit: waveform=%s", cached)
         return json.loads(cached.read_text(encoding="utf-8"))
     vocals = next((stem for stem in work_dir.glob("*/**/vocals.mp3") if stem.is_file() and stem.stat().st_size > 0), None)
     if vocals is None and not separator_available():
@@ -64,6 +66,7 @@ def _generate_vocal_waveform(path: Path, cache_root: Path, update: Callable[[str
 
     work_dir.mkdir(parents=True, exist_ok=True)
     if vocals is None:
+        logging.info("Vocal cache miss: key=%s directory=%s; starting separation", work_dir.name, work_dir)
         model_dir = cache_root / "models"
         model_dir.mkdir(parents=True, exist_ok=True)
         tools_dir = cache_root / "bin"
@@ -126,6 +129,7 @@ def _generate_vocal_waveform(path: Path, cache_root: Path, update: Callable[[str
 
         vocals = next((stem for stem in work_dir.glob("*/**/vocals.mp3") if stem.is_file() and stem.stat().st_size > 0), None)
     else:
+        logging.info("Vocal cache hit: stem=%s; generating waveform only", vocals)
         update("已找到上次分离的人声，正在生成波形", {"phase": "waveform", "progress": 98})
     if vocals is None:
         raise RuntimeError("分离完成，但没有找到人声音轨")

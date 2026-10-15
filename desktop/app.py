@@ -56,7 +56,8 @@ def serve():
 
     @app.get("/api/desktop/health")
     def health():
-        return {"token": os.environ.get("PUJIAN_START_TOKEN"), "desktop": True}
+        from desktop.version import VERSION
+        return {"token": os.environ.get("PUJIAN_START_TOKEN"), "desktop": True, "version": VERSION}
 
     # Mount last, so /api and /media retain precedence over frontend files.
     @app.get("/api/desktop/update-ready")
@@ -143,7 +144,27 @@ def smoke_test(data):
             languages = subprocess.run([_tesseract(), "--list-langs"], check=True, capture_output=True,
                                        creationflags=subprocess.CREATE_NO_WINDOW).stdout.decode(errors="replace")
             assert "chi_sim" in languages and "eng" in languages
-        (data / "smoke-test.json").write_text(json.dumps({"ok": True, "offline": offline()}), encoding="utf-8")
+        # Use the actual JS API and a real native window. Importing Python.NET alone
+        # does not exercise recursive API exposure or catch initialization deadlocks.
+        from desktop.updater import DesktopUpdater
+        updater = DesktopUpdater(BUNDLE, ASSETS, data)
+        updater._window = webview.create_window('Pujian bridge self-test', html='<html><body>Bridge self-test</body></html>',
+                                                 hidden=True, js_api=updater)
+        bridge = {}
+        def loaded():
+            try:
+                methods = updater._window.evaluate_js('Object.keys(window.pywebview.api).sort()')
+                bridge['ok'] = methods == ['check_update', 'install_update', 'update_status']
+            finally:
+                updater._window.destroy()
+        updater._window.events.loaded += loaded
+        fixed_runtime = BUNDLE / 'tools/webview2'
+        if fixed_runtime.is_dir():
+            webview.settings['WEBVIEW2_RUNTIME_PATH'] = str(fixed_runtime)
+        webview.start(gui='edgechromium', private_mode=True)
+        if not bridge.get('ok'):
+            raise RuntimeError('桌面更新接口自检失败')
+        (data / "smoke-test.json").write_text(json.dumps({"ok": True, "offline": offline(), 'desktopBridge': True}), encoding="utf-8")
     finally:
         stop_backend(process, job, log)
 
@@ -151,6 +172,8 @@ def smoke_test(data):
 def main():
     data = configure()
     logging.basicConfig(filename=str(data / "desktop.log"), level=logging.INFO, encoding="utf-8")
+    from desktop.version import VERSION
+    logging.info("Pujian %s starting; data=%s; vocal_cache=%s", VERSION, data, os.environ.get('PUJIAN_VOCAL_CACHE'))
     # windowed executables have no stdout/stderr; workers still need streams.
     for name in ("stdout", "stderr"):
         if getattr(sys, name) is None:
@@ -178,7 +201,7 @@ def main():
     try:
         from desktop.updater import DesktopUpdater
         updater = DesktopUpdater(BUNDLE, ASSETS, data)
-        updater.window = webview.create_window("谱间 · 歌谱同步工作台", f"http://127.0.0.1:{PORT}/",
+        updater._window = webview.create_window("谱间 · 歌谱同步工作台", f"http://127.0.0.1:{PORT}/",
                               width=1440, height=960, min_size=(1024, 700), js_api=updater)
         webview.start(gui="edgechromium", private_mode=False, storage_path=str(data / "webview"))
     finally:
