@@ -5,6 +5,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from backend.runtime import data_root
 from .scrolling import calculate_camera_target, calculate_progress, ease_in_out
 
 BG = (246, 245, 239)
@@ -118,7 +119,10 @@ def _segment_for_time(segments: list[dict], at: float, mode: str = "wipe"):
         return None, None
     if mode == "full":
         started = [(index, segment) for index, segment in enumerate(ordered) if float(segment["startTime"]) <= at]
-        return started[-1] if started else (ordered[0], 0)
+        if started:
+            index, segment = started[-1]
+            return segment, index
+        return ordered[0], 0
     active = [(index, segment) for index, segment in enumerate(ordered) if float(segment["startTime"]) <= at < float(segment["endTime"])]
     if active:
         index, segment = active[-1]
@@ -163,7 +167,9 @@ def _draw_one(project: dict, at: float, width: int, height: int, zoom: float, sa
 
 
 def render_frame(project: dict, at: float, width: int, height: int, zoom: float = 1.0, safe_zone: float | None = None, media_dir: Path | None = None) -> Image.Image:
-    media_dir = media_dir or Path(__file__).resolve().parents[1] / "media"
+    # Desktop imports live in the user's data directory, outside the executable.
+    # Use the same root as /media, previews and saved projects.
+    media_dir = media_dir if media_dir is not None else data_root() / "media"
     safe_zone = safe_zone if safe_zone is not None else (0.50 if height > width else 0.58)
     pages = {page["id"]: _page_layout(page, media_dir, width, height, zoom) for page in project.get("pages", [])}
     timed_ids = {flag.get("segmentId") for flag in project.get("flags", []) if flag.get("kind") != "end"}
