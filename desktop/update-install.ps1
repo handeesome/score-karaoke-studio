@@ -67,7 +67,9 @@ try {
     [Windows.Forms.MessageBox]::Show("更新未完成，已尝试恢复原版本。请重新打开软件。`n日志：$log", '谱间更新失败') | Out-Null
 }
 if ($success) {
-    Start-Process -FilePath (Join-Path $bundle 'Pujian.exe') -WorkingDirectory $bundle -WindowStyle Hidden
+    # The installer is hidden, but the interactive application must open visibly.
+    $restarted = Start-Process -FilePath (Join-Path $bundle 'Pujian.exe') -WorkingDirectory $bundle -WindowStyle Normal -PassThru
+    Write-UpdateLog ("Application restarted; pid=" + $restarted.Id)
     if ($stage.StartsWith([IO.Path]::GetFullPath($config.data).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) -and
         ([IO.Path]::GetFileName($stage)).StartsWith('update-')) { Remove-Item -LiteralPath $stage -Recurse -Force }
 }

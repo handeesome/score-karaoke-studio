@@ -23,7 +23,6 @@ export default function InspectorPanel({ project, selected, selectedCount, timed
     {segment ? <div className="inspector-card">
       <div className="inspector-selection-heading"><strong>乐句 {String(index + 1).padStart(2, '0')}</strong><span className={assigned ? 'assignment-ready' : 'assignment-pending'}>{assigned ? '已放入时间轴' : '待打点'}</span></div>
       <p className="inspector-page-label">歌谱第 {project.pages.findIndex(p => p.id === segment.pageId) + 1} 页</p>
-      <div className="inspector-time-help">拖动下方时间条的左右边缘，调整开始和结束位置。</div>
       {(['startTime', 'endTime'] as const).map(field => <div className="inspector-time" key={field}>
         <div><span>{field === 'startTime' ? '开始时间' : '结束时间'}</span><output aria-label={field === 'startTime' ? '开始时间' : '结束时间'}>{formatTime(segment[field])}</output></div>
         <div className="inspector-time-actions"><button className="button button-secondary" onClick={() => onSeek(segment[field])}>定位到这里</button><button className="button button-secondary" onClick={() => onTime(segment, field, currentTime)}>设为当前</button></div>
@@ -34,8 +33,7 @@ export default function InspectorPanel({ project, selected, selectedCount, timed
         {segmentRegions(segment).length > 1 && <button className="button button-secondary" onClick={() => onReverse(segment.id)}>反转框顺序</button>}
         {!full && <button className="button button-secondary" onClick={onRepeat}>重复使用选中框{selectedCount > 1 ? `（${selectedCount}）` : ''}</button>}
         <button className="button button-danger-quiet" onClick={() => onDelete(segment.id)}>{segment.partitionKey ? '跳过此区' : '删除歌谱上的框'}</button>
-        <p>移除乐句时间，请使用时间轴上方的按钮。</p>
       </details>
-    </div> : <div className="inspector-empty"><strong>点击歌谱，选择一句</strong><p>选中后，这里显示这句的开始时间、结束时间和合并操作。</p><p>{full ? '整框模式中，歌词框的位置固定。' : '先点选一个框，再拖动它调整位置。'}</p></div>}
+    </div> : <div className="inspector-empty"><strong>未选中乐句</strong></div>}
   </aside>
 }

@@ -23,7 +23,10 @@ _locks_guard = threading.Lock()
 
 
 def separator_available() -> bool:
-    return importlib.util.find_spec("demucs") is not None
+    if importlib.util.find_spec('demucs') is not None:
+        return True
+    from backend.runtime import local_fast_vocals
+    return importlib.util.find_spec('onnxruntime') is not None and local_fast_vocals() is not None
 
 
 def cache_key(path: Path) -> str:
@@ -81,9 +84,11 @@ def _generate_vocal_waveform(path: Path, cache_root: Path, update: Callable[[str
         environment = os.environ.copy()
         environment["TORCH_HOME"] = str(model_dir)
         environment["PATH"] = str(tools_dir) + os.pathsep + environment.get("PATH", "")
-        from backend.runtime import local_demucs
-        repo = local_demucs()
-        update("正在加载人声模型" if repo else "正在准备人声模型，首次使用可能需要下载",
+        from backend.runtime import local_demucs, local_fast_vocals
+        fast_models = local_fast_vocals()
+        repo = None if fast_models else local_demucs()
+        logging.info('Vocal engine=%s', 'spleeter-2stems-fp16' if fast_models else 'htdemucs')
+        update("正在加载人声模型" if fast_models or repo else "正在准备人声模型，首次使用可能需要下载",
                {"phase": "loading", "progress": None})
         worker = ([sys.executable, "--separate-vocals"] if getattr(sys, "frozen", False)
                   else [sys.executable, "-m", "backend.separation_worker"])

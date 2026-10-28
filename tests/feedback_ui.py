@@ -81,7 +81,7 @@ api = UpdateApi()
 window = webview.create_window('Feedback regression test', 'http://127.0.0.1:18768', hidden=True, width=1366, height=900, js_api=api)
 result = {'checks': []}
 phase = -1
-phases = [8, 9, 10] if '--merges' in sys.argv else [11, 12, 13, 14, 15] if '--ux' in sys.argv else list(range(16))
+phases = [16, 17] if '--layout' in sys.argv else [8, 9, 10] if '--merges' in sys.argv else [11, 12, 13, 14, 15] if '--ux' in sys.argv else list(range(18))
 
 def js(code): return window.evaluate_js(code)
 def wait(expr, predicate=bool, seconds=8):
@@ -107,7 +107,8 @@ def key(value, **options):
 def check(name): result['checks'].append(name)
 def capture(name):
     # Capture simple initial views only; later interaction checks use DOM geometry.
-    if name != 'editor-large.png': return
+    if '--no-capture' in sys.argv: return
+    if name not in ('editor-large.png', 'editor-compact.png'): return
     from System import Action
     from System.IO import FileStream, FileMode
     from Microsoft.Web.WebView2.Core import CoreWebView2CapturePreviewImageFormat
@@ -403,7 +404,7 @@ def readability():
       const s=getComputedStyle(el);if(parseFloat(s.fontSize)<16)bad.push({text:el.textContent.slice(0,50),font:s.fontSize,color:s.color});
     }return bad})()''')
     assert not audit, audit
-    assert js('getComputedStyle(document.querySelector(".flag-button")).minHeight') == '52px'
+    assert js('getComputedStyle(document.querySelector(".flag-button")).minHeight') == '44px'
     assert js('getComputedStyle(document.body).fontSize') == '18px'
     assert js('document.querySelectorAll(".time-input input").length') == 0
     width = js('document.querySelector(".canvas-area").clientWidth')
@@ -479,7 +480,56 @@ def cursor_full():
     assert not js('Boolean(document.querySelector("#merge-target"))')
     check('Full mode keeps a hand cursor and fixed frames; irrelevant wipe editing controls are hidden')
 
-cases = [legacy, automatic, exporting, waveform_failure, score_zoom, wipe_timing, full_timing, full_reopen, merge_wipe, merge_full, merge_reopen, readability, preferences_reopen, marking, cursor_wipe, cursor_full]
+def editor_layout():
+    window.resize(1366, 900); time.sleep(.3)
+    assert js('document.querySelector(".timeline-editbar>strong").innerText.trim()') == '时间轴'
+    assert not js('Boolean(document.querySelector(".point-feedback,.tool-instruction,.inspector-time-help"))')
+    name = js('''(() => {const e=document.querySelector('.wave-label span'),s=getComputedStyle(e);return {text:e.textContent,whiteSpace:s.whiteSpace,overflow:s.textOverflow,width:e.clientWidth,scroll:e.scrollWidth}})()''')
+    assert name['text'] == '一路我由救主引领（完整歌名显示测试）.mp3', name
+    assert name['whiteSpace'] == 'normal' and name['overflow'] == 'clip' and name['scroll'] <= name['width'] + 1, name
+    assert js('document.querySelector(".wave-label").scrollWidth <= document.querySelector(".wave-label").clientWidth + 1')
+    def toolbar_geometry():
+        return js("""(() => {const header=document.querySelector('.timeline-editbar'),elements=[header.querySelector('strong'),header.querySelector('.play-button'),header.querySelector('.flag-button'),header.querySelector('.transport-time'),header.querySelector('.speed-control')];return {centers:elements.map(e=>{const r=e.getBoundingClientRect();return r.y+r.height/2}),contained:header.contains(document.querySelector('.transport-panel')),overflow:document.body.scrollWidth>innerWidth}})()""")
+    toolbar = toolbar_geometry()
+    assert toolbar['contained'] and max(toolbar['centers']) - min(toolbar['centers']) <= 2 and not toolbar['overflow'], toolbar
+    def geometry():
+        return js('''(() => {const c=document.querySelector('.canvas-area').getBoundingClientRect(),t=document.querySelector('.timeline-panel').getBoundingClientRect();return {score:c.height,timeline:t.height,bottom:t.bottom,screen:innerHeight}})()''')
+    before = geometry()
+    assert before['score'] >= 300 and before['timeline'] <= 161, before
+    capture('editor-compact.png')
+    js('''(() => {const e=document.querySelector('.timeline-divider'),r=e.getBoundingClientRect();window.splitterY=r.y+r.height/2;e.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerId:77,button:0,clientY:window.splitterY}));})()''')
+    js('''document.querySelector('.timeline-divider').dispatchEvent(new PointerEvent('pointermove',{bubbles:true,pointerId:77,buttons:1,clientY:window.splitterY-70}))''')
+    time.sleep(.15)
+    after = geometry()
+    assert after['timeline'] >= before['timeline'] + 60 and after['score'] < before['score'] - 60, (before, after)
+    js('''document.querySelector('.timeline-divider').dispatchEvent(new PointerEvent('pointerup',{bubbles:true,pointerId:77,button:0,clientY:window.splitterY-70}))''')
+    js('''document.querySelector('.timeline-divider').dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,key:'Home'}))''')
+    time.sleep(.1)
+    assert abs(geometry()['timeline'] - 110) <= 1
+    js('''document.querySelector('.timeline-divider').dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,key:'ArrowUp'}))''')
+    time.sleep(.1)
+    assert abs(geometry()['timeline'] - 130) <= 1
+    window.resize(1024, 768); click('更大'); time.sleep(.3)
+    small = geometry()
+    toolbar = toolbar_geometry()
+    assert max(toolbar['centers']) - min(toolbar['centers']) <= 2 and not toolbar['overflow'], toolbar
+    assert small['score'] >= 155 and small['bottom'] <= small['screen'] + 1, small
+    js('document.querySelector(".timeline-block").click()')
+    time.sleep(.1)
+    toolbar = toolbar_geometry()
+    assert max(toolbar['centers']) - min(toolbar['centers']) <= 2 and not toolbar['overflow'], toolbar
+    click('大字'); window.resize(1366, 900); time.sleep(.3)
+    check('Full song title wraps; static tips are absent; score gets primary space; mouse and keyboard resize the timeline without viewport overflow')
+
+
+def editor_layout_reopen():
+    assert js('JSON.parse(localStorage.getItem("pujian-display")).timelineHeight') == 130
+    height = js('document.querySelector(".timeline-panel").getBoundingClientRect().height')
+    assert abs(height - 130) <= 1, height
+    check('Timeline height survives reopening with display preferences')
+
+
+cases = [legacy, automatic, exporting, waveform_failure, score_zoom, wipe_timing, full_timing, full_reopen, merge_wipe, merge_full, merge_reopen, readability, preferences_reopen, marking, cursor_wipe, cursor_full, editor_layout, editor_layout_reopen]
 def loaded():
     global phase
     try:
@@ -515,7 +565,8 @@ def loaded():
         if phase == 13:
             fixture['segments'].append({**copy.deepcopy(fixture['segments'][0]),'id':'next-box','timingSet':False,'startTime':4,'endTime':8})
         if phase == 14: fixture['highlight']['mode']='wipe'
-        if phase != 12: js('localStorage.setItem("pujian-display",JSON.stringify({textSize:"large",inspectorOpen:true}))')
+        if phase in (16,17): fixture['source']['audio']='一路我由救主引领（完整歌名显示测试）.mp3'
+        if phase not in (12,17): js('localStorage.setItem("pujian-display",JSON.stringify({textSize:"large",inspectorOpen:true}))')
         js('localStorage.setItem("pujian-project",' + json.dumps(json.dumps(fixture)) + '); location.reload()')
     except Exception as error:
         result['error'] = repr(error)
@@ -531,4 +582,4 @@ try: webview.start(gui='edgechromium', private_mode=False, storage_path=str(DATA
 finally: timer.cancel(); server.should_exit = True
 print(json.dumps(result, ensure_ascii=True), flush=True)
 (DATA / 'result.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
-assert 'error' not in result and len(result['checks']) == (3 if '--merges' in sys.argv else 5 if '--ux' in sys.argv else 21), result
+assert 'error' not in result and len(result['checks']) == (2 if '--layout' in sys.argv else 3 if '--merges' in sys.argv else 5 if '--ux' in sys.argv else 23), result

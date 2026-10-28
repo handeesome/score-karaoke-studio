@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from 'react'
 import { AudioLines } from 'lucide-react'
 import ActionDialog from './ActionDialog'
 import type { KaraokeFlag, Segment, TimingRange } from '../types'
@@ -21,6 +21,7 @@ interface VocalProgress {
 }
 
 interface TimelinePanelProps {
+  controls?: ReactNode
   audioUrl?: string | null
   audioName?: string | null
   duration: number
@@ -52,7 +53,7 @@ function envelopePath(values: number[]): string {
   return `M0,50 L${upper} L${width},50 L${lower} Z`
 }
 
-export default function TimelinePanel({ audioUrl, audioName, duration, flags, segments, selected, time, playing, highlightMode, spareTimings = [], onSelect, onSeek, onChooseAudio, onMoveSegment, onDeleteTiming, onInsertTiming }: TimelinePanelProps) {
+export default function TimelinePanel({ controls, audioUrl, audioName, duration, flags, segments, selected, time, playing, highlightMode, spareTimings = [], onSelect, onSeek, onChooseAudio, onMoveSegment, onDeleteTiming, onInsertTiming }: TimelinePanelProps) {
   const [waveform, setWaveform] = useState<WaveformData | null>(null)
   const [loading, setLoading] = useState(false)
   const [stage, setStage] = useState('')
@@ -241,7 +242,7 @@ export default function TimelinePanel({ audioUrl, audioName, duration, flags, se
   }
 
   return <div className="timeline-panel" ref={panelRef} aria-label="人声波形时间轴，滚轮缩放">
-    <div className="timeline-editbar"><strong>时间轴</strong><span>{highlightMode === 'full' ? '整框：拖动分界线，两边时长一起调整' : '从左到右：可留空位，也可重叠'}</span>{selectedSegment && (assigned(selectedSegment)
+    <div className="timeline-editbar"><strong>时间轴</strong>{controls}{selectedSegment && (assigned(selectedSegment)
       ? <button className="button button-secondary" onClick={() => onDeleteTiming(selectedSegment.id)}>{highlightMode === 'full' ? `从第 ${segments.indexOf(selectedSegment) + 1} 句重新打点` : `移除第 ${segments.indexOf(selectedSegment) + 1} 句时间`}</button>
       : highlightMode === 'wipe' ? <><button className="button button-primary" onClick={() => onInsertTiming(selectedSegment.id, time)}>在当前位置插入第 {segments.indexOf(selectedSegment) + 1} 句</button><button className="button button-secondary" onClick={() => onInsertTiming(selectedSegment.id, selectedSegment.startTime)}>放回原来时间</button></>
         : <>{spareTimings.length > 0 && <button className="button button-primary" onClick={() => onInsertTiming(selectedSegment.id, spareTimings[0].startTime)}>放入下一个未分配时间段</button>}<span className="timeline-pending">第 {segments.indexOf(selectedSegment) + 1} 句待打点，歌谱框已保留</span></>)}</div>
@@ -258,7 +259,7 @@ export default function TimelinePanel({ audioUrl, audioName, duration, flags, se
               {!waveform && (loading ? <div className="vocal-progress" aria-label="人声分离进度">
                 <div className="vocal-progress-heading"><span role="status">{stage}</span><span>{vocalProgress?.progress != null ? `${Math.floor(vocalProgress.progress)}%` : '准备中'}</span></div>
                 <div className={`vocal-progress-bar ${vocalProgress?.progress == null ? 'indeterminate' : ''}`} role="progressbar" aria-label="人声分离" aria-valuemin={0} aria-valuemax={100} aria-valuenow={vocalProgress?.progress ?? undefined}><span style={vocalProgress?.progress != null ? { width: `${vocalProgress.progress}%` } : undefined}/></div>
-                <div className="vocal-progress-detail"><span>已用 {clock(elapsed)}{vocalProgress?.completedSegments ? ` · 已完成 ${vocalProgress.completedSegments} 段` : ''}</span>{quietSeconds >= 120 ? <button className="vocal-help" onPointerDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); setHelpOpen(true) }}>为什么还没完成？</button> : <span>完成一段后更新进度</span>}</div>
+                <div className="vocal-progress-detail"><span>已用 {clock(elapsed)}{vocalProgress?.completedSegments ? ` · 已完成 ${vocalProgress.completedSegments} 段` : ''}</span>{quietSeconds >= 120 && <button className="vocal-help" onPointerDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); setHelpOpen(true) }}>为什么还没完成？</button>}</div>
               </div> : error ? <div className="waveform-feedback" onPointerDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()}><div className="feedback-panel feedback-error" role="alert"><strong>人声波形暂时不可用</strong><p>可以重试读取，或继续播放音频手动打点。</p><button className="button button-secondary" onClick={() => setRetry(n => n + 1)}>重试读取波形</button><button className="button button-secondary" onClick={() => setHelpOpen(true)}>查看原因</button></div></div> : <div className="waveform-placeholder"><button className="button button-secondary" onPointerDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); onChooseAudio() }}>选择音频，显示人声波形</button></div>)}
               {segments.map((segment, index) => { if (!assigned(segment)) return null; const shown = previewSegments[index]; return <button key={segment.id} data-segment-id={segment.id} className={`timeline-block ${selected === segment.id ? 'current' : ''}`} style={{ left: `${Math.max(0, Math.min(100, shown.startTime / extent * 100))}%`, width: `${Math.max(0, Math.min(100, shown.endTime / extent * 100)) - Math.max(0, Math.min(100, shown.startTime / extent * 100))}%` }} title={`乐句 ${index + 1} · ${formatTime(shown.startTime)}–${formatTime(shown.endTime)}`} aria-label={`乐句 ${index + 1}，${formatTime(shown.startTime)} 至 ${formatTime(shown.endTime)}，${highlightMode === 'full' ? '按 Delete 从这句重新打点' : '按 Delete 仅移除这句时间'}`} onPointerDown={event => startBlockDrag(event, segment)} onPointerMove={moveBlock} onPointerUp={endBlockDrag} onPointerCancel={() => { blockDrag.current = null; setDraggedSegment(null) }} onLostPointerCapture={() => { blockDrag.current = null; setDraggedSegment(null) }} onClick={event => { event.stopPropagation(); onSelect(segment.id) }} onContextMenu={event => { event.preventDefault(); event.stopPropagation(); onSelect(segment.id); onDeleteTiming(segment.id) }} onKeyDown={event => { if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); event.stopPropagation(); onDeleteTiming(segment.id) } }}><span className="timeline-resize-grip start" aria-hidden="true"/><span className="timeline-block-text">{String(index + 1).padStart(2, '0')}</span><span className="timeline-resize-grip end" aria-hidden="true"/></button> })}
               <div className="timeline-cursor" style={{ left: `${Math.max(0, Math.min(100, time / extent * 100))}%` }}/>

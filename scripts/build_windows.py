@@ -109,7 +109,7 @@ def build(args):
     if args.include_models:
         from prepare_models import prepare
         # Fail early if models/OCR are missing, before the expensive EXE build.
-        prepare(stage / "models", args.whisper, args.demucs, args.download_models)
+        prepare(stage / "models", args.whisper, args.demucs, args.download_models, args.fast_vocals)
         copy_ocr(stage / "tesseract", args.tesseract)
     if args.webview2 and not (args.webview2 / "msedgewebview2.exe").is_file():
         raise RuntimeError("-WebView2Path 必须指向解压后的 Windows x64 Fixed Version Runtime 目录")
@@ -123,6 +123,7 @@ def build(args):
                    "--hidden-import", "uvicorn.lifespan.on", "--hidden-import", "demucs.separate",
                    "--hidden-import", "desktop.windows_job", "--hidden-import", "backend.main",
                    "--hidden-import", "backend.separation_worker",
+                   "--hidden-import", "backend.fast_vocals",
                    "--exclude-module", "IPython", "--exclude-module", "pytest", "--exclude-module", "matplotlib",
                    "--exclude-module", "PyQt5", "--exclude-module", "PyQt6", "--exclude-module", "PySide6"]
     for package in ("webview", "demucs", "faster_whisper", "ctranslate2", "imageio_ffmpeg", "julius", "lameenc"):
@@ -162,10 +163,13 @@ if __name__ == "__main__":
     parser.add_argument("--download-models", action="store_true")
     parser.add_argument("--whisper", type=Path)
     parser.add_argument("--demucs", type=Path)
+    parser.add_argument("--fast-vocals", type=Path, help="已准备的 Spleeter 快速人声模型目录，需同时 --include-models")
     parser.add_argument("--tesseract", type=Path)
     parser.add_argument("--webview2", type=Path)
     args = parser.parse_args()
     if args.download_models and not args.include_models:
         parser.error("--download-models 需要 --include-models")
+    if args.fast_vocals and not args.include_models:
+        parser.error("--fast-vocals 需要 --include-models")
     (ROOT / "build").mkdir(exist_ok=True)
     build(args)

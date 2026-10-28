@@ -83,10 +83,14 @@ def copy_demucs(destination: Path, supplied: Path | None, download: bool):
     get_model("htdemucs", repo=destination)  # Validates YAML, hashes and architecture.
 
 
-def prepare(output: Path, whisper: Path | None = None, demucs: Path | None = None, download=False):
+def prepare(output: Path, whisper: Path | None = None, demucs: Path | None = None, download=False,
+            fast_vocals: Path | None = None):
     output.mkdir(parents=True, exist_ok=True)
     copy_whisper(output / "whisper-base", whisper, download)
     copy_demucs(output / "demucs", demucs, download)
+    if fast_vocals is not None:
+        from prepare_fast_vocals import prepare as prepare_fast
+        prepare_fast(output / 'spleeter-2stems', fast_vocals)
     # Record exact model bytes, without shipping any of the user's audio or project files.
     entries = {}
     for file in sorted(output.rglob("*")):
@@ -105,6 +109,7 @@ if __name__ == "__main__":
     parser.add_argument("--whisper", type=Path, help="完整的 faster-whisper 模型目录")
     parser.add_argument("--demucs", type=Path, help="含 htdemucs.yaml 和 .th 权重的本地目录")
     parser.add_argument("--download", action="store_true", help="允许下载缺少的模型，默认仅复制本地缓存")
+    parser.add_argument("--fast-vocals", type=Path, help="可选：已准备的 Spleeter 快速人声模型目录")
     args = parser.parse_args()
-    prepare(args.output.resolve(), args.whisper, args.demucs, args.download)
+    prepare(args.output.resolve(), args.whisper, args.demucs, args.download, args.fast_vocals)
     print(f"Models ready: {args.output}")

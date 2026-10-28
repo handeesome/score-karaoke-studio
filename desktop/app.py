@@ -19,7 +19,7 @@ SOURCE_ROOT = Path(__file__).resolve().parent.parent
 # PyInstaller embeds resources under _internal; user-supplied models live beside the exe.
 ASSETS = Path(getattr(sys, "_MEIPASS", SOURCE_ROOT))
 BUNDLE = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else SOURCE_ROOT
-PORT = 18765  # A stable origin keeps localStorage available across restarts.
+PORT = int(os.environ.get('PUJIAN_TEST_PORT', '18765'))  # Tests use an isolated port; normal origin stays stable.
 
 
 def configure():
@@ -144,6 +144,14 @@ def smoke_test(data):
             languages = subprocess.run([_tesseract(), "--list-langs"], check=True, capture_output=True,
                                        creationflags=subprocess.CREATE_NO_WINDOW).stdout.decode(errors="replace")
             assert "chi_sim" in languages and "eng" in languages
+        from backend.runtime import local_fast_vocals
+        fast_models = local_fast_vocals()
+        if fast_models:
+            import numpy as np
+            from backend.fast_vocals import load_sessions, separate_audio, validate_models
+            validate_models(fast_models)
+            sample = separate_audio(np.zeros((2, 4410), dtype=np.float32), load_sessions(fast_models))
+            assert sample.shape == (2, 4410) and np.isfinite(sample).all()
         # Use the actual JS API and a real native window. Importing Python.NET alone
         # does not exercise recursive API exposure or catch initialization deadlocks.
         from desktop.updater import DesktopUpdater
@@ -167,6 +175,44 @@ def smoke_test(data):
         (data / "smoke-test.json").write_text(json.dumps({"ok": True, "offline": offline(), 'desktopBridge': True}), encoding="utf-8")
     finally:
         stop_backend(process, job, log)
+
+
+def fit_window_to_work_area(window):
+    """Fit the outer window to its monitor after WinForms has applied DPI scaling."""
+    from System.Drawing import Rectangle, Size
+    from System.Windows.Forms import FormStartPosition, Screen
+
+    native = window.native
+    area = Screen.FromControl(native).WorkingArea
+    margin = min(round(12 * native.DeviceDpi / 96), area.Width // 4, area.Height // 4)
+    width = min(native.Width, area.Width - 2 * margin)
+    height = min(native.Height, area.Height - 2 * margin)
+    # A fixed minimum must not force the window beyond a smaller work area.
+    native.MinimumSize = Size(min(native.MinimumSize.Width, width), min(native.MinimumSize.Height, height))
+    native.StartPosition = FormStartPosition.Manual
+    native.Bounds = Rectangle(area.X + (area.Width - width) // 2,
+                              area.Y + (area.Height - height) // 2, width, height)
+    logging.info("Window fitted to work area: bounds=%s; work_area=%s; dpi=%s",
+                 native.Bounds, area, native.DeviceDpi)
+
+
+def reveal_desktop_window(window):
+    """Old updaters use STARTUPINFO(SW_HIDE); explicitly show after the first ShowWindow."""
+    from ctypes import wintypes
+    from System import Action
+    from System.Windows.Forms import Screen
+
+    def show():
+        native = window.native
+        handle = native.Handle.ToInt64()
+        user32 = ctypes.windll.user32
+        user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+        user32.IsWindowVisible.argtypes = [wintypes.HWND]
+        user32.ShowWindow(handle, 5)  # SW_SHOW preserves the size chosen for the work area.
+        native.Activate()
+        logging.info('Desktop window shown: visible=%s; within_work_area=%s',
+                     bool(user32.IsWindowVisible(handle)), bool(Screen.FromControl(native).WorkingArea.Contains(native.Bounds)))
+    window.native.Invoke(Action(show))
 
 
 def main():
@@ -203,6 +249,8 @@ def main():
         updater = DesktopUpdater(BUNDLE, ASSETS, data)
         updater._window = webview.create_window("谱间 · 歌谱同步工作台", f"http://127.0.0.1:{PORT}/",
                               width=1440, height=960, min_size=(1024, 700), js_api=updater)
+        updater._window.events.before_show += lambda: fit_window_to_work_area(updater._window)
+        updater._window.events.shown += lambda: reveal_desktop_window(updater._window)
         webview.start(gui="edgechromium", private_mode=False, storage_path=str(data / "webview"))
     finally:
         stop_backend(process, job, log)

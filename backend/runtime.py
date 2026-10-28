@@ -64,6 +64,26 @@ def whisper_source(cache: Path) -> str:
     return "base"
 
 
+def local_fast_vocals() -> Path | None:
+    """Optional small, offline ONNX models; old installations still use Demucs."""
+    explicit = os.environ.get('PUJIAN_FAST_VOCALS_MODEL')
+    if explicit:
+        candidates = [Path(explicit)]
+    else:
+        bundled = os.environ.get('PUJIAN_BUNDLE_DIR')
+        candidates = ([Path(bundled) / 'models' / 'spleeter-2stems'] if bundled else [])
+        candidates.append(whisper_cache() / 'spleeter-2stems')
+    for path in candidates:
+        if all((path / name).is_file() for name in ('vocals.fp16.onnx', 'accompaniment.fp16.onnx')):
+            return path.resolve()
+        if explicit or path.exists():
+            raise RuntimeError(f'快速人声模型不完整：{path}，请重新安装快速模型包。')
+    if not explicit:
+        from backend.fast_vocals import embedded_models
+        return embedded_models(whisper_cache() / 'embedded-spleeter-2stems-v1')
+    return None
+
+
 def local_demucs() -> Path | None:
     explicit = os.environ.get("PUJIAN_DEMUCS_REPO")
     bundled = os.environ.get("PUJIAN_BUNDLE_DIR")

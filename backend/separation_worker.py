@@ -8,6 +8,42 @@ import time
 import traceback
 
 
+def run_fast(args, reporter, model_dir):
+    import subprocess
+    import numpy as np
+    from imageio_ffmpeg import get_ffmpeg_exe
+    from backend.fast_vocals import (SAMPLE_RATE, cpu_threads, decode_stereo,
+                                    load_sessions, separate_audio, validate_models)
+
+    threads = cpu_threads()
+    reporter.write('loading', '正在加载人声模型', None, model='spleeter-2stems-fp16', threads=threads)
+    validate_models(model_dir)
+    sessions = load_sessions(model_dir, threads)
+    reporter.write('decoding', '正在读取音频', None)
+    audio = decode_stereo(args.audio)
+    completed = 0
+
+    def on_chunk(end, total):
+        nonlocal completed
+        completed += 1
+        reporter.write('separating', '正在分离人声', round(5 + 90 * end / total, 1),
+                       completedSegments=completed, processedSeconds=round(end / SAMPLE_RATE, 1),
+                       durationSeconds=round(total / SAMPLE_RATE, 1), model='spleeter-2stems-fp16', threads=threads)
+
+    vocals = separate_audio(audio, sessions, on_chunk)
+    reporter.write('saving', '正在保存人声音轨', 97)
+    target = args.output / 'spleeter-2stems' / args.audio.stem / 'vocals.mp3'
+    target.parent.mkdir(parents=True, exist_ok=True)
+    partial = target.with_name('vocals.partial.mp3')
+    # Encoding is only for the cached analysis stem. Video exports keep the original audio.
+    subprocess.run([get_ffmpeg_exe(), '-v', 'error', '-y', '-f', 'f32le', '-ar', str(SAMPLE_RATE),
+                    '-ac', '2', '-i', 'pipe:0', '-c:a', 'libmp3lame', '-b:a', '192k', str(partial)],
+                   input=np.ascontiguousarray(vocals.T).tobytes(), stdout=subprocess.DEVNULL,
+                   stderr=subprocess.PIPE, check=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    partial.replace(target)
+    reporter.write('separated', '人声音轨已生成', 98, model='spleeter-2stems-fp16', threads=threads)
+
+
 class ProgressReporter:
     def __init__(self, path: Path):
         self.path = path
@@ -60,6 +96,11 @@ def main(argv=None):
     args.output.mkdir(parents=True, exist_ok=True)
     reporter = ProgressReporter(args.progress_file)
     try:
+        from backend.runtime import local_fast_vocals
+        fast_models = local_fast_vocals()
+        if fast_models is not None:
+            run_fast(args, reporter, fast_models)
+            return
         reporter.write('loading', '正在加载人声模型', None)
         from demucs.api import Separator, save_audio
         separator = Separator(model='htdemucs', repo=args.repo, device='cpu', shifts=1,

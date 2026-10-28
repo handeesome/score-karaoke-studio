@@ -118,3 +118,31 @@ input[type="checkbox"]{width:24px;height:24px;flex:none}.auto-box-list label{min
 @media(max-width:1100px){.topbar{gap:8px}.topbar-left,.top-actions{gap:6px}.highlight-mode-control>span{display:none}.top-actions .button{padding-inline:9px}.main-layout.inspector-open{grid-template-columns:minmax(0,1fr) 310px}.toolbar-files{flex-basis:100%}.toolbar-right{justify-content:space-between;flex:1}.transport-panel{padding-inline:12px}.transport-left{gap:8px}.transport-time{flex-direction:column;align-items:flex-start}.right-panel{padding:10px}}
 @media(max-width:820px){.main-layout.inspector-open{grid-template-columns:minmax(0,1fr) 290px}.right-panel{display:block}.export-dialog-body{grid-template-columns:1fr}.tool-menu-items{right:auto;left:0}.home-update{right:14px}.home-header{padding-inline:14px}}
 @media(max-height:780px){.topbar{min-height:68px;padding-block:6px}.main-layout{grid-template-rows:minmax(0,1fr) auto 210px}.segmentation-toolbar .tool-instruction{display:none}.transport-panel{min-height:94px;padding-block:6px}.workspace-toolbar{padding-block:5px}.canvas-area{padding-block:8px}.timeline-panel{padding-block:6px}.timeline-track>.wave-label{width:80px}}
+/* Keep score space primary; the splitter changes only the requested timeline height. */
+.main-layout{grid-template-rows:minmax(0,1fr) 12px min(var(--timeline-height,160px),var(--timeline-max-height,40dvh))}
+.transport-panel{min-height:76px;padding:8px 16px;gap:6px 12px}
+.point-feedback{min-height:0;line-height:1.4}.point-feedback.point-warning{color:#704800}
+.timeline-divider{grid-column:1/-1;grid-row:2;display:flex;align-items:center;justify-content:center;background:#edf1e9;border-block:1px solid #b8c1b2;cursor:row-resize;touch-action:none;user-select:none;z-index:4}
+.timeline-divider>span{width:54px;height:4px;border-radius:3px;background:#7c8f76;pointer-events:none}
+.timeline-divider:hover,.timeline-divider[data-dragging="true"]{background:#dce8d7}.timeline-divider:focus-visible{outline:3px solid #165bba;outline-offset:-3px}
+.main-layout:has(.timeline-divider[data-dragging="true"]){user-select:none}
+.timeline-panel{grid-row:3;padding:6px 16px 10px;overflow:hidden}
+.timeline-editbar{min-height:24px;padding-bottom:4px;flex:none}
+.timeline-track>.wave-label{width:clamp(128px,16vw,220px);margin-top:42px;padding:8px 10px;flex-direction:column;flex-wrap:nowrap;align-items:flex-start;justify-content:center;gap:8px;overflow-x:hidden;overflow-y:auto}
+.timeline-track>.wave-label span{width:100%;max-width:100%;flex:none;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;word-break:normal;line-height:1.45}
+.inspector-empty{padding-top:24px}
+
+.timeline-editbar{position:relative;align-items:center;column-gap:12px}
+.timeline-editbar>strong{flex:none}
+.timeline-editbar .transport-panel{grid-column:auto;grid-row:auto;flex:1 0 calc(100% - 90px);min-width:0;min-height:44px;padding:0;border:0;gap:8px 12px;flex-wrap:nowrap;position:static}
+.timeline-editbar .transport-left{gap:10px;flex-wrap:nowrap;min-width:0}
+.timeline-editbar .play-button,.timeline-editbar .flag-button{height:44px;min-height:44px;padding:6px 10px;font-size:var(--ui-secondary);gap:6px;white-space:nowrap;flex-wrap:nowrap}
+.timeline-editbar .play-button svg,.timeline-editbar .flag-button svg{width:20px;height:20px;flex:none}
+.timeline-editbar .flag-button strong{font-size:var(--ui-secondary)}
+.timeline-editbar .flag-button .next-flag{font-size:var(--ui-secondary)}
+.timeline-editbar .transport-time{flex-direction:row;flex-wrap:nowrap;align-items:center;white-space:nowrap;font-variant-numeric:tabular-nums}
+.timeline-editbar .transport-time strong,.timeline-editbar .transport-time span{font-size:var(--ui-secondary)}
+.timeline-editbar .speed-control{white-space:nowrap;gap:6px}
+.timeline-editbar .speed-control select{height:44px;min-height:44px;font-size:var(--ui-secondary);padding:4px}
+.timeline-editbar .point-feedback{position:absolute;right:0;top:100%;max-width:min(600px,100%);padding:8px 12px;border:1px solid #87977f;border-radius:6px;background:#fff;box-shadow:0 2px 8px #0002;z-index:6}
+@media(max-width:1100px){.timeline-editbar{column-gap:8px}.timeline-editbar .transport-panel{gap:6px}.timeline-editbar .transport-left{gap:6px}.timeline-editbar .play-button,.timeline-editbar .flag-button{padding-inline:8px}.timeline-editbar .speed-control>span{display:none}}

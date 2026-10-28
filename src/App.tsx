@@ -1,9 +1,10 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from 'react'
 import { AlertTriangle, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Clock3, FileAudio2, FileImage, FileVideo2, Flag, ImagePlus, LoaderCircle, MoreHorizontal, Music2, Pause, Play, Redo2, RotateCcw, Scissors, Settings2, Sparkles, Undo2, Upload, WandSparkles, X, ZoomIn, ZoomOut } from 'lucide-react'
 import type { AutoBoxCandidate, AutoCandidate, ExportSettings, KaraokeFlag, Project, Region, ScorePage, Segment } from './types'
 import ExportDialog from './components/ExportDialog'
 import AutoAlignDialog from './components/AutoAlignDialog'
 import TimelinePanel from './components/TimelinePanel'
+import TimelineDivider from './components/TimelineDivider'
 import AutoBoxDialog from './components/AutoBoxDialog'
 import ProgressDialog from './components/ProgressDialog'
 import HomeImportView from './components/HomeImportView'
@@ -24,13 +25,20 @@ const API = ''
 function savedDisplay() {
   try {
     const saved = JSON.parse(localStorage.getItem('pujian-display') || '{}')
-    return { textSize: saved?.textSize, inspectorOpen: typeof saved?.inspectorOpen === 'boolean' ? saved.inspectorOpen : undefined }
+    return { textSize: saved?.textSize, inspectorOpen: typeof saved?.inspectorOpen === 'boolean' ? saved.inspectorOpen : undefined,
+      timelineHeight: typeof saved?.timelineHeight === 'number' && Number.isFinite(saved.timelineHeight) ? Math.max(110, Math.min(800, saved.timelineHeight)) : undefined }
   } catch { return {} }
 }
 function App() {
   const [textSize, setTextSize] = useState<TextSize>(() => savedDisplay().textSize === 'extra' ? 'extra' : 'large')
   const [inspectorOpen, setInspectorOpen] = useState<boolean>(() => savedDisplay().inspectorOpen ?? window.innerWidth >= 1280)
+  const [timelineHeight, setTimelineHeight] = useState<number>(() => savedDisplay().timelineHeight ?? 160)
   const [pointFeedback, setPointFeedback] = useState<{ text: string; warning?: boolean } | null>(null)
+  useEffect(() => {
+    if (!pointFeedback) return
+    const timer = window.setTimeout(() => setPointFeedback(null), 4500)
+    return () => window.clearTimeout(timer)
+  }, [pointFeedback])
   const [project, setProjectState] = useState<Project>(() => {
     try {
       const loaded = recoverFlagsFromTiming(migrateLegacyCuts({ ...initialProject, ...JSON.parse(localStorage.getItem('pujian-project') || '{}') }))
@@ -133,8 +141,8 @@ function App() {
 
   useLayoutEffect(() => { document.documentElement.dataset.textSize = textSize }, [textSize])
   useEffect(() => {
-    try { localStorage.setItem('pujian-display', JSON.stringify({ textSize, inspectorOpen })) } catch { /* Display choices do not affect project saving. */ }
-  }, [textSize, inspectorOpen])
+    try { localStorage.setItem('pujian-display', JSON.stringify({ textSize, inspectorOpen, timelineHeight })) } catch { /* Display choices do not affect project saving. */ }
+  }, [textSize, inspectorOpen, timelineHeight])
   useEffect(() => {
     try { localStorage.setItem('pujian-project', JSON.stringify(project)); localSaveFailed.current = false; setSaveIssue(null) }
     catch { localSaveFailed.current = true; setSaveIssue('local') }
@@ -1019,7 +1027,7 @@ function App() {
       <div className="topbar-left"><div className="brand"><div className="brand-mark"><Music2 size={17} strokeWidth={2.4} /></div><span>谱间</span><span className="brand-divider"/><span className="product-label">歌谱同步工作台</span></div><div className="highlight-mode-control" role="group" aria-label="文字高亮方式"><span>高亮</span><button type="button" aria-pressed={highlightMode === 'wipe'} title="播放时从左到右逐渐高亮文字" onClick={() => changeHighlightMode('wipe')}>从左到右</button><button type="button" aria-pressed={highlightMode === 'full'} title="乐句开始时整框高亮，直到下一句开始" onClick={() => changeHighlightMode('full')}>整框</button></div></div>
       <div className="top-actions"><DisplaySize value={textSize} onChange={setTextSize}/>{updateControl}<button className="button button-secondary history-button" title="撤销（Ctrl+Z）" disabled={!undoHistory.current.length} onClick={undoProject}><Undo2 size={22}/>撤销</button><button className="button button-secondary history-button" title="重做（Ctrl+Shift+Z）" disabled={!redoHistory.current.length} onClick={redoProject}><Redo2 size={22}/>重做</button><button className="button button-primary" onClick={openExport}><Upload size={15}/>导出视频</button></div>
     </header>
-    <div className={`main-layout ${inspectorOpen ? 'inspector-open' : 'inspector-closed'}`}>
+    <div className={`main-layout ${inspectorOpen ? 'inspector-open' : 'inspector-closed'}`} style={{ '--timeline-height': `${timelineHeight}px` } as CSSProperties}>
       <main className="workspace">
         <div className="workspace-toolbar"><div className="toolbar-files"><button className="file-chip" title={project.source.pdf ? `点击重新选择乐谱：${project.source.pdf}` : '选择 PDF 或 JPG、PNG、WebP 乐谱'} onClick={chooseScore}><FileImage size={14}/><span>歌谱</span><strong>{fileName(project.source.pdf) || '选择乐谱'}</strong></button><button className="file-chip" title={project.source.audio ? `点击重新选择音频：${project.source.audio}` : '选择音频文件'} onClick={chooseAudio}><FileAudio2 size={14}/><span>音频</span><strong>{fileName(project.source.audio) || '选择音频'}</strong></button></div><div className="toolbar-right"><button className="button button-secondary inspector-toggle" aria-expanded={inspectorOpen} onClick={() => setInspectorOpen(open => !open)}>{inspectorOpen ? '收起乐句设置' : '乐句设置'}</button><div className="page-count">{project.pages.length ? <><span>第</span><strong>{activePage + 1}</strong><span>/ {project.pages.length} 页</span><button aria-label="上一页歌谱" className="page-arrow" disabled={activePage === 0} onClick={() => setActivePage(activePage - 1)}><ChevronLeft size={15}/></button><button aria-label="下一页歌谱" className="page-arrow" disabled={activePage >= project.pages.length - 1} onClick={() => setActivePage(activePage + 1)}><ChevronRight size={15}/></button></> : <span>等待导入乐谱</span>}</div><span className="toolbar-sep"/><div className="zoom-control"><button aria-label="缩小乐谱" title="缩小乐谱" onClick={() => changeZoom(-.1)}><ZoomOut size={15}/></button><button className="zoom-value" title="点击使歌谱适合窗口宽度" onClick={() => setZoom(null)}>{zoom === null ? '适合宽度' : `${Math.round(zoom * 100)}%`}</button><button aria-label="放大乐谱" title="放大乐谱" onClick={() => changeZoom(.1)}><ZoomIn size={15}/></button></div></div></div>
         {highlightMode === 'full' ? <div className="segmentation-toolbar partition-toolbar">
@@ -1027,7 +1035,6 @@ function App() {
           {([['line-h', '整页横线'], ['line-v', '整页竖线'], ['cell-cut', '框内竖切'], ['line-edit', '调整分隔线']] as const).map(([value, label]) =>
             <button key={value} className={`button compact ${partitionTool === value ? 'button-active' : 'button-quiet'}`} aria-pressed={partitionTool === value} onClick={() => requestPartitionTool(value)}>{label}</button>)}
           <ToolMenu><button className="button" onClick={deletePartitionLine}>删除分隔线</button><button className="button reset-toolbar" disabled={!project.segments.length && !project.partitions?.some(item => item.horizontal.length || item.vertical.length)} onClick={() => setResetOpen(true)}>重新分区</button></ToolMenu>
-          <div className="tool-instruction">{partitionTool === 'line-h' ? '画横线：在歌谱上点击，确定每行的上边和下边。' : partitionTool === 'line-v' ? '画整页竖线：通常在歌词左边、右边各画一条。' : partitionTool === 'cell-cut' ? '框内竖切：点击一个四边闭合的分区，将这一行分成左右两部分。' : '调整分隔线：拖动线条调整；点击分区可选择乐句或恢复跳过的区域。'}</div>
         </div> : <div className="segmentation-toolbar"><span>歌词框</span>
           <button className={`button ${tool === 'row' ? 'button-active' : 'button-quiet'}`} title="添加标注（N）" aria-pressed={tool === 'row'} onClick={() => setTool(tool === 'row' ? 'select' : 'row')}><span className="horizontal-line-icon"/>添加标注</button>
           <button className={`button ${tool === 'select' ? 'button-active' : 'button-quiet'}`} aria-pressed={tool === 'select'} onClick={() => setTool('select')}>框选乐句</button>
@@ -1039,7 +1046,7 @@ function App() {
             <button className="button" disabled={autoBusy} onClick={() => void startAutoAlign()}>{autoBusy ? '正在对齐' : '自动对齐'}</button>
             <button className="button reset-toolbar" disabled={!project.segments.length && !(project.flags || []).length} onClick={() => setResetOpen(true)}>重新标注</button>
           </ToolMenu>
-          <div className="tool-instruction">{autoBusy ? autoStage : boxBusy ? '正在查找歌词行和明显留白' : tool === 'row' ? '在空白处拖出一个框，框住这一句歌词。' : tool === 'cut' ? '点击歌词框内部，将它分成左右两个框。' : '先点选一个框，再拖动它；在空白处拖出范围，可以多选。'}</div>
+          {(autoBusy || boxBusy) && <div className="tool-instruction">{autoBusy ? autoStage : '正在查找歌词行和明显留白'}</div>}
         </div>}
 
         <div className="canvas-area" ref={canvasRef}>
@@ -1083,16 +1090,16 @@ function App() {
       {inspectorOpen && <InspectorPanel project={project} selected={selected} selectedCount={selectedIds.length} timed={timedIds} full={highlightMode === 'full'} currentTime={time} orderDraft={orderDraft} mergeTarget={mergeTarget}
         onClose={() => setInspectorOpen(false)} onOrderDraft={setOrderDraft} onMoveOrder={moveSegmentTo} onMergeTarget={setMergeTarget} onMerge={mergeSegments} onTime={commitTime} onSeek={seek} onReverse={reverseSegmentRegions} onRepeat={repeatSelectedRegions} onDelete={deleteSegment}/>}
 
-      <div className="transport-panel">
+      <TimelineDivider height={timelineHeight} onChange={setTimelineHeight}/>
+
+      <TimelinePanel controls={<div className="transport-panel">
         <div className="transport-left"><button className="play-button" onClick={togglePlay} aria-label={playing ? '暂停播放' : '播放音频'}>{playing ? <Pause size={24}/> : <Play size={24}/>}<span>{playing ? '暂停' : '播放'}</span></button>
           <button className="flag-button" onClick={addFlag}><Flag size={24}/><strong>打点</strong><span className="next-flag">{nextFlagDescription}</span></button>
           <div className="transport-time"><strong>{formatTime(time)}</strong><span>/ {formatTime(duration || project.audioDuration || 0)}</span></div>
         </div>
         <div className="transport-right"><label className="speed-control"><span>播放速度</span><select aria-label="播放速度" defaultValue="1" onChange={e => { if (audioRef.current) audioRef.current.playbackRate = Number(e.target.value) }}><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1">1.0×</option><option value="1.25">1.25×</option></select></label></div>
-        <div className={`point-feedback ${pointFeedback?.warning ? 'point-warning' : ''}`} role="status" aria-live="polite">{pointFeedback?.text || '唱到下一句开始时点击“打点”，也可以按 Enter。'}</div>
-      </div>
-
-      <TimelinePanel audioUrl={project.source.audioUrl} audioName={project.source.audio} duration={duration || project.audioDuration || 0} flags={visibleFlags} segments={project.segments} selected={selected} time={time} playing={playing} onSelect={id => { selectOne(id); const pageIndex = project.pages.findIndex(page => page.id === project.segments.find(segment => segment.id === id)?.pageId); if (pageIndex >= 0) setActivePage(pageIndex) }} onSeek={seek} onChooseAudio={chooseAudio} highlightMode={highlightMode} spareTimings={project.spareTimings} onMoveSegment={moveTimelineSegment} onDeleteTiming={deleteTimelineSegment} onInsertTiming={insertTimelineSegment}/>
+        {pointFeedback && <div className={`point-feedback ${pointFeedback.warning ? 'point-warning' : ''}`} role="status" aria-live="polite">{pointFeedback.text}</div>}
+      </div>} audioUrl={project.source.audioUrl} audioName={project.source.audio} duration={duration || project.audioDuration || 0} flags={visibleFlags} segments={project.segments} selected={selected} time={time} playing={playing} onSelect={id => { selectOne(id); const pageIndex = project.pages.findIndex(page => page.id === project.segments.find(segment => segment.id === id)?.pageId); if (pageIndex >= 0) setActivePage(pageIndex) }} onSeek={seek} onChooseAudio={chooseAudio} highlightMode={highlightMode} spareTimings={project.spareTimings} onMoveSegment={moveTimelineSegment} onDeleteTiming={deleteTimelineSegment} onInsertTiming={insertTimelineSegment}/>
     </div>
     {resetOpen && <ActionDialog notice={{
       title: highlightMode === 'full' ? '清空现有标注，重新分区？' : '清空现有标注，重新标注？',
