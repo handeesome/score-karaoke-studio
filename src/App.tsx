@@ -79,6 +79,8 @@ function App() {
   const [previewRetry, setPreviewRetry] = useState(0)
   const [exportJob, setExportJob] = useState<{ jobId: string; status: string; progress: number; warnings?: string[]; downloadUrl?: string | null; outputPath?: string; error?: string } | null>(null)
   const [exportBusy, setExportBusy] = useState(false)
+  const exportInput = useMemo(() => JSON.stringify({ ...project, export: exportSettings }), [project, exportSettings])
+  const exportedInput = useRef<string | null>(null)
   const [resetOpen, setResetOpen] = useState(false)
   const [lyricOrderOpen, setLyricOrderOpen] = useState(false)
   const [autoBusy, setAutoBusy] = useState(false)
@@ -367,6 +369,11 @@ function App() {
     void poll()
     return () => { cancelled = true }
   }, [exportJob?.jobId, exportJob?.status])
+  useEffect(() => {
+    if (!exportJob || ['queued', 'running'].includes(exportJob.status) || exportedInput.current === exportInput) return
+    setExportJob(null); setValidation(null); setValidationError(null)
+    if (exportOpen) { setPreviewRetry(value => value + 1); void checkExport() }
+  }, [exportInput, exportJob?.status])
   useEffect(() => {
     if (!exportOpen || !project.projectId) return
     const controller = new AbortController()
@@ -1051,7 +1058,7 @@ function App() {
   const openExport = async () => {
     audioRef.current?.pause(); setPlaying(false)
     if (!project.projectId) { setNotice({ title: '先添加歌谱，才能生成视频', description: '请选择歌谱和对应音频，完成分区与时间设置后再生成视频。', primary: { label: '选择歌谱', onClick: chooseScore } }); return }
-    if (exportJob) { setExportOpen(true); return }
+    if (exportJob && (['queued', 'running'].includes(exportJob.status) || exportedInput.current === exportInput)) { setExportOpen(true); return }
     const settings = project.export || initialProject.export!
     setExportSettings(settings); setPreviewTime(time); setExportJob(null); setValidation(null); setValidationError(null); setPreviewError(false); setPreviewUrl(null); setExportOpen(true)
     await checkExport({ ...project, export: settings })
@@ -1087,8 +1094,14 @@ function App() {
     setExportBusy(true); setValidationError(null)
     try {
       let outputDirectory: string | undefined
+      let outputPath: string | undefined
       const chooser = window.pywebview?.api?.choose_export_directory
-      if (chooser) {
+      const fileChooser = window.pywebview?.api?.choose_export_file
+      if (fileChooser) {
+        const selected = await fileChooser(`${project.projectName || '歌谱视频'}.mp4`)
+        if (!selected) { setExportBusy(false); return }
+        outputPath = selected
+      } else if (chooser) {
         const selected = await chooser()
         if (!selected) { setExportBusy(false); return }
         outputDirectory = selected
@@ -1101,9 +1114,10 @@ function App() {
       if (!reportResponse.ok) throw new Error('无法检查导出条件，请重新检查。')
       const report = await reportResponse.json(); setValidation(report)
       if (!report.valid) { setExportBusy(false); return }
-      const response = await fetch(`${API}/api/projects/${project.projectId}/export`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...exportSettings, outputDirectory }) })
+      const response = await fetch(`${API}/api/projects/${project.projectId}/export`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...exportSettings, outputDirectory, outputPath }) })
       const data = await response.json()
       if (!response.ok) throw new Error(data.detail?.errors?.join('；') || data.detail || '无法开始导出')
+      exportedInput.current = JSON.stringify(snapshot)
       setExportJob({ ...data, progress: 0 })
     } catch (error) { setExportBusy(false); setValidationError(error instanceof Error ? error.message : '视频没有开始生成，请重试。') }
   }

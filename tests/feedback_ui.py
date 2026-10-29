@@ -100,7 +100,10 @@ def export(project_id: str, options: dict):
     control['exports'] += 1
     return {'jobId': 'video', 'status': 'running'}
 @app.get('/api/exports/video')
-def export_status(): return {'jobId': 'video', 'status': 'running', 'progress': .25}
+def export_status():
+    if control.get('export_finished'):
+        return {'jobId': 'video', 'status': 'completed', 'progress': 1, 'outputPath': control['export_requests'][-1].get('outputPath', str(DATA / '完成的视频.mp4')), 'downloadUrl': '/api/exports/video/download'}
+    return {'jobId': 'video', 'status': 'running', 'progress': .25}
 
 app.mount('/', StaticFiles(directory=ROOT / 'dist', html=True))
 server = uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', port=18768, log_level='error'))
@@ -120,6 +123,14 @@ class UpdateApi:
     def choose_export_directory(self):
         self._folder_calls += 1
         return None if self._cancel_folder else str(DATA)
+    def choose_export_file(self, suggested_name):
+        self._folder_calls += 1
+        control['suggested_export_name'] = suggested_name
+        return None if self._cancel_folder else str(DATA / '自定义 视频.mp4')
+    def open_export(self, path, folder=False):
+        control.setdefault('opened_exports', []).append([path, folder])
+        if control.get('open_export_error'): raise ValueError('找不到已导出的视频，请检查保存位置')
+        return True
     def check_update(self, manual=False):
         if manual:
             self._checks += 1
@@ -136,7 +147,7 @@ api = UpdateApi()
 window = webview.create_window('Feedback regression test', 'http://127.0.0.1:18768', hidden='--export-features' not in sys.argv, width=1366, height=900, js_api=api)
 result = {'checks': []}
 phase = -1
-phases = [40] if '--score-entry' in sys.argv else [36, 37, 39] if '--project-actions' in sys.argv else [33, 34, 35] if '--imports' in sys.argv else [31, 32] if '--transport-keys' in sys.argv else [27, 28, 29, 30] if '--vocal-refinement' in sys.argv else [24, 25, 26] if '--update' in sys.argv else [22, 23] if '--export-features' in sys.argv else [20, 21] if '--inversion' in sys.argv else [18, 19] if '--numbering' in sys.argv else [16, 17] if '--layout' in sys.argv else [8, 9, 10] if '--merges' in sys.argv else [11, 12, 13, 14, 15] if '--ux' in sys.argv else list(range(27))
+phases = [41] if '--export-repeat' in sys.argv else [40] if '--score-entry' in sys.argv else [36, 37, 39] if '--project-actions' in sys.argv else [33, 34, 35] if '--imports' in sys.argv else [31, 32] if '--transport-keys' in sys.argv else [27, 28, 29, 30] if '--vocal-refinement' in sys.argv else [24, 25, 26] if '--update' in sys.argv else [22, 23] if '--export-features' in sys.argv else [20, 21] if '--inversion' in sys.argv else [18, 19] if '--numbering' in sys.argv else [16, 17] if '--layout' in sys.argv else [8, 9, 10] if '--merges' in sys.argv else [11, 12, 13, 14, 15] if '--ux' in sys.argv else list(range(27))
 
 def js(code): return window.evaluate_js(code)
 def wait(expr, predicate=bool, seconds=8):
@@ -747,7 +758,7 @@ def export_features():
     api._cancel_folder=False
     click('生成 MP4 视频');wait("document.querySelector('.export-dialog').innerText.includes('正在生成视频')")
     assert api._folder_calls==folders+2 and control['exports']==count+1
-    assert control['export_requests'][-1]['outputDirectory']==str(DATA)
+    assert control['export_requests'][-1]['outputPath']==str(DATA / '自定义 视频.mp4')
     saved_export_features=state()
     check('Color selection applies only on confirmation; preview plays audio and advancing frames; folder selection precedes generation and cancellation starts no job')
 
@@ -1114,7 +1125,65 @@ def score_entry_rules():
     assert not js('Boolean(document.querySelector(".score-delete"))')
     check('Top score chooser starts a new project with one file; More scores appends; red Delete page stays right of Next page for multiple pages and hides for one page; Project menu removed')
 
-cases = [legacy, automatic, exporting, waveform_failure, score_zoom, wipe_timing, full_timing, full_reopen, merge_wipe, merge_full, merge_reopen, readability, preferences_reopen, marking, cursor_wipe, cursor_full, editor_layout, editor_layout_reopen, manual_numbering, automatic_numbering, inversion, inversion_reopen, export_features, export_features_reopen, update_modal, update_modal, update_modal, vocal_refinement, vocal_refinement, vocal_refinement, vocal_refinement, transport_keys, transport_keys, timeline_progress_zoom, score_imports, home_file_drop, delete_score_pages, delete_score_pages, home_project_actions, home_project_actions, score_entry_rules]
+def repeat_export():
+    control['export_finished'] = True
+    count = control['exports']
+    click('导出视频')
+    wait('Boolean(document.querySelector(".validation-ok"))')
+    click('生成 MP4 视频')
+    wait('document.querySelector(".export-dialog").innerText.includes("导出完成")')
+    assert control['suggested_export_name'].endswith('.mp4')
+    assert control['export_requests'][-1]['outputPath'] == str(DATA / '自定义 视频.mp4')
+    click('打开文件夹'); click('打开视频')
+    assert control['opened_exports'][-2:] == [[str(DATA / '自定义 视频.mp4'), True], [str(DATA / '自定义 视频.mp4'), False]]
+    assert '自定义 视频.mp4' in js('document.querySelector(".export-save-path").innerText')
+    api._cancel_folder = True
+    click('重新生成视频')
+    assert control['exports'] == count + 1
+    assert js('Boolean(document.querySelector(".job-card"))')
+    api._cancel_folder = False
+    click('重新生成视频')
+    wait('document.querySelector(".export-dialog").innerText.includes("导出完成")')
+    assert control['exports'] == count + 2
+    control['open_export_error'] = True
+    click('打开视频')
+    wait('document.querySelector(".action-dialog h2")?.innerText.includes("无法打开视频")')
+    assert '视频已保存在' not in js('document.querySelector(".action-dialog").innerText')
+    control['open_export_error'] = False
+    dialog('重新生成视频')
+    wait('document.querySelector(".export-dialog").innerText.includes("导出完成")')
+    assert control['exports'] == count + 3
+    click('返回编辑')
+    before = state()['segments'][0]['endTime']
+    drag_timing('old-box', 'end', 1)
+    assert state()['segments'][0]['endTime'] != before
+    click('导出视频')
+    wait('Boolean(document.querySelector(".validation-ok"))')
+    assert not js('Boolean(document.querySelector(".job-card,.export-save-path"))')
+    assert '生成 MP4 视频' in js('document.querySelector(".export-dialog-footer").innerText')
+    click('生成 MP4 视频')
+    wait('document.querySelector(".export-dialog").innerText.includes("导出完成")')
+    js("""(() => {const e=document.querySelector('.export-field select');e.value='portrait';e.dispatchEvent(new Event('change',{bubbles:true}))})()""")
+    wait('!document.querySelector(".job-card")')
+    wait('Boolean(document.querySelector(".validation-ok"))')
+    click('生成 MP4 视频')
+    wait('document.querySelector(".export-dialog").innerText.includes("导出完成")')
+    assert control['export_requests'][-1]['width'] == 1080
+    window.resize(1024, 768); time.sleep(.2)
+    assert js("""[...document.querySelectorAll('.export-dialog-footer .button')].every(b=>{const r=b.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth&&r.bottom<=innerHeight})""")
+    control['export_finished'] = False
+    click('重新生成视频')
+    wait('document.querySelector(".export-dialog").innerText.includes("正在生成视频")')
+    click('返回编辑，继续生成')
+    drag_timing('old-box', 'end', 1)
+    control['export_finished'] = True
+    time.sleep(1.4)
+    click('导出视频')
+    wait('Boolean(document.querySelector(".validation-ok"))')
+    assert not js('Boolean(document.querySelector(".job-card"))')
+    check('Completed exports always allow regeneration; cancel preserves result; open failure offers regeneration; phrase and output changes invalidate results, including edits during export')
+
+cases = [legacy, automatic, exporting, waveform_failure, score_zoom, wipe_timing, full_timing, full_reopen, merge_wipe, merge_full, merge_reopen, readability, preferences_reopen, marking, cursor_wipe, cursor_full, editor_layout, editor_layout_reopen, manual_numbering, automatic_numbering, inversion, inversion_reopen, export_features, export_features_reopen, update_modal, update_modal, update_modal, vocal_refinement, vocal_refinement, vocal_refinement, vocal_refinement, transport_keys, transport_keys, timeline_progress_zoom, score_imports, home_file_drop, delete_score_pages, delete_score_pages, home_project_actions, home_project_actions, score_entry_rules, repeat_export]
 def loaded():
     global phase
     try:
@@ -1193,4 +1262,4 @@ try: webview.start(gui='edgechromium', private_mode=False, storage_path=str(DATA
 finally: timer.cancel(); server.should_exit = True
 print(json.dumps(result, ensure_ascii=True), flush=True)
 (DATA / 'result.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
-assert 'error' not in result and len(result['checks']) == (1 if '--score-entry' in sys.argv else 3 if '--project-actions' in sys.argv else 3 if '--imports' in sys.argv else 2 if '--transport-keys' in sys.argv else 4 if '--vocal-refinement' in sys.argv else 3 if '--update' in sys.argv else 2 if '--export-features' in sys.argv else 2 if '--inversion' in sys.argv else 2 if '--numbering' in sys.argv else 2 if '--layout' in sys.argv else 3 if '--merges' in sys.argv else 5 if '--ux' in sys.argv else 32), result
+assert 'error' not in result and len(result['checks']) == (1 if '--export-repeat' in sys.argv else 1 if '--score-entry' in sys.argv else 3 if '--project-actions' in sys.argv else 3 if '--imports' in sys.argv else 2 if '--transport-keys' in sys.argv else 4 if '--vocal-refinement' in sys.argv else 3 if '--update' in sys.argv else 2 if '--export-features' in sys.argv else 2 if '--inversion' in sys.argv else 2 if '--numbering' in sys.argv else 2 if '--layout' in sys.argv else 3 if '--merges' in sys.argv else 5 if '--ux' in sys.argv else 32), result

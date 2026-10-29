@@ -66,7 +66,9 @@ export default function ExportDialog(props: {
   const openResult = async (folder: boolean) => {
     if (!job?.outputPath) return
     try { await window.pywebview?.api?.open_export?.(job.outputPath, folder) }
-    catch (error) { setNotice({ title: '暂时无法打开视频', description: `视频已保存在：${job.outputPath}`, details: String(error) }) }
+    catch (error) { setNotice({ title: folder ? '暂时无法打开文件夹' : '暂时无法打开视频',
+      description: `请检查文件是否被移动或删除，也可以重新生成。上次保存位置：${job.outputPath}`,
+      details: String(error), primary: { label: '重新生成视频', onClick: generate } }) }
   }
   const standardZooms = [1, 0.9, 1.1, 1.2]
   const [customZoom, setCustomZoom] = useState(() => !standardZooms.includes(settings.scoreZoom))
@@ -99,11 +101,11 @@ export default function ExportDialog(props: {
             {validation.warnings.length > 0 && <div className="feedback-panel"><strong>建议检查，可以继续生成</strong><p>以下时间间隔可能是歌曲本身的安排，不会阻止生成视频。</p>{validation.warnings.map((item, i) => <p key={i}>{item}</p>)}</div>}
             {validation.valid && !validation.warnings.length && <div className="validation-card validation-ok"><div className="validation-title"><CheckCircle2 size={20}/><strong>已检查，可以生成视频</strong></div></div>}
           </>}
-          {job?.outputPath && <p className="export-save-path">已保存到：{job.outputPath}</p>}
+          {job?.outputPath && <p className="export-save-path">{job.status === 'completed' ? '已保存到' : '保存位置'}：{job.outputPath}</p>}
           {job && <div className={`job-card ${job.status === 'failed' ? 'job-failed' : ''}`}><div className="job-card-heading"><span>{job.status === 'completed' ? '导出完成' : job.status === 'failed' ? '导出失败' : '正在渲染帧并编码'}</span><strong>{Math.round(job.progress * 100)}%</strong></div><div className="job-progress"><i style={{ width: `${Math.round(job.progress * 100)}%` }}/></div>{job.error && <div className="feedback-panel feedback-error" role="alert"><strong>视频没有生成成功</strong><p>已有标注会保留。可以点击下方“重新生成视频”重试。</p><details><summary>查看详细原因</summary><p>{job.error}</p></details></div>}</div>}
         </div>
       </div>
-      <footer className="export-dialog-footer"><span className="export-duration">成片时长约 {formatTime(duration)}</span><div><button className="button button-quiet" onClick={onClose}>{busy ? '返回编辑，继续生成' : '返回编辑'}</button>{job?.status === 'completed' ? <>{job.outputPath && window.pywebview?.api?.open_export ? <><button className="button button-secondary" onClick={() => void openResult(true)}><FolderOpen size={18}/>打开文件夹</button><button className="button button-primary" onClick={() => void openResult(false)}><Play size={18}/>打开视频</button></> : <a className="button button-primary export-download" href={job.downloadUrl || '#'}><Download size={15}/>保存 MP4 视频</a>}</> : <button className="button button-primary" disabled={busy} onClick={generate}>{busy && <LoaderCircle className="spin" size={15}/>} {busy ? '正在生成视频' : job?.status === 'failed' ? '重新生成视频' : '生成 MP4 视频'}</button>}</div></footer>
+      <footer className="export-dialog-footer"><span className="export-duration">成片时长约 {formatTime(duration)}</span><div><button className="button button-quiet" onClick={onClose}>{busy ? '返回编辑，继续生成' : '返回编辑'}</button>{job?.status === 'completed' && <>{job.outputPath && window.pywebview?.api?.open_export ? <><button className="button button-secondary" onClick={() => void openResult(true)}><FolderOpen size={18}/>打开文件夹</button><button className="button button-secondary" onClick={() => void openResult(false)}><Play size={18}/>打开视频</button></> : <a className="button button-secondary export-download" href={job.downloadUrl || '#'}><Download size={15}/>保存 MP4 视频</a>}</>}<button className="button button-primary" disabled={busy} onClick={generate}>{busy && <LoaderCircle className="spin" size={15}/>} {busy ? '正在生成视频' : job?.status === 'failed' || job?.status === 'completed' ? '重新生成视频' : '生成 MP4 视频'}</button></div></footer>
       {notice && <ActionDialog notice={notice} onClose={() => setNotice(null)}/>}
     </section>
   </div>

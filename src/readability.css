@@ -166,6 +166,7 @@ input[type="checkbox"]{width:24px;height:24px;flex:none}.auto-box-list label{min
 .button.score-delete{min-height:44px;font-size:var(--ui-secondary);white-space:nowrap}
 .button.score-delete:not(:disabled){color:#9b241c;border-color:#aa6255;background:#fff5f3}
 .button.score-delete:hover:not(:disabled){background:#fbe2de}
+.export-dialog-footer>div{flex-wrap:wrap;justify-content:flex-end}
 .file-drop-overlay{position:fixed;inset:12px;z-index:1000;display:grid;place-items:center;padding:20px;border:3px dashed #52704a;border-radius:14px;background:#f5faf0ed;pointer-events:none}
 .file-drop-overlay>div{display:flex;flex-direction:column;align-items:center;gap:14px;text-align:center;color:#294021}
 .file-drop-overlay strong{font-size:calc(var(--ui-heading) + 4px)}

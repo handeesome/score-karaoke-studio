@@ -95,6 +95,26 @@ class DesktopUpdater:
         self._state = {'status': 'idle'}
         self._candidate = None
         self._export_folders = {(self._data / 'exports').resolve()}
+        self._last_export_directory = None
+
+    def choose_export_file(self, suggested_name='歌谱视频.mp4'):
+        import webview
+        folder = self._last_export_directory or Path.home() / 'Downloads'
+        name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', str(suggested_name)).strip().rstrip('.') or '歌谱视频.mp4'
+        if not name.lower().endswith('.mp4'):
+            name += '.mp4'
+        selected = self._window.create_file_dialog(webview.FileDialog.SAVE, directory=str(folder),
+                                                  save_filename=name, file_types=('MP4 视频 (*.mp4)',))
+        if not selected:
+            return None
+        target = Path(selected if isinstance(selected, str) else selected[0]).expanduser().resolve()
+        if target.suffix.lower() != '.mp4':
+            raise ValueError('请将视频保存为 MP4 文件')
+        if not target.parent.is_dir():
+            raise ValueError('请选择一个现有文件夹')
+        self._export_folders.add(target.parent)
+        self._last_export_directory = target.parent
+        return str(target)
 
     def choose_export_directory(self):
         import webview
@@ -116,8 +136,13 @@ class DesktopUpdater:
 
     def open_export(self, path, folder=False):
         target = Path(path).resolve()
-        if target.parent not in self._export_folders or target.suffix.lower() != '.mp4' or not target.is_file():
-            raise ValueError('找不到已导出的视频，请检查保存位置')
+        if target.parent not in self._export_folders or target.suffix.lower() != '.mp4':
+            logging.warning('Export open rejected: target=%s; chosen_folders=%s', target, self._export_folders)
+            raise ValueError('此路径不是当前选择的导出位置，请重新生成并选择保存文件夹')
+        if folder and not target.parent.is_dir():
+            raise ValueError('保存文件夹已被移动或删除，请重新选择保存位置')
+        if not folder and not target.is_file():
+            raise ValueError('视频已被移动或删除，请打开保存文件夹查找，或重新生成视频')
         os.startfile(str(target.parent if folder else target))
         return True
 

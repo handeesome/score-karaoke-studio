@@ -17,7 +17,24 @@ class UpdateTests(unittest.TestCase):
         updater = DesktopUpdater('.', '.', '.')
         updater._window = Mock()
         exposed = {name for name in dir(updater) if not name.startswith('_')}
-        self.assertEqual(exposed, {'check_update', 'update_status', 'install_update', 'choose_export_directory', 'open_export'})
+        self.assertEqual(exposed, {'check_update', 'update_status', 'install_update', 'choose_export_directory', 'choose_export_file', 'open_export'})
+
+    def test_save_dialog_suggests_filename_and_authorizes_the_selected_path(self):
+        with tempfile.TemporaryDirectory() as folder:
+            updater = DesktopUpdater('.', '.', folder)
+            updater._window = Mock()
+            updater._window.create_file_dialog.return_value = None
+            self.assertIsNone(updater.choose_export_file('歌曲.mp4'))
+            target = Path(folder) / '自定义 视频名称.mp4'
+            updater._window.create_file_dialog.return_value = [str(target)]
+            self.assertEqual(updater.choose_export_file('示例歌曲'), str(target.resolve()))
+            arguments = updater._window.create_file_dialog.call_args.kwargs
+            self.assertEqual(arguments['save_filename'], '示例歌曲.mp4')
+            self.assertEqual(arguments['file_types'], ('MP4 视频 (*.mp4)',))
+            target.write_bytes(b'video')
+            with patch('desktop.updater.os.startfile', create=True) as launch:
+                self.assertTrue(updater.open_export(str(target)))
+                launch.assert_called_once_with(str(target.resolve()))
 
     def test_export_directory_cancel_and_open_are_limited_to_chosen_folder(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -39,6 +56,22 @@ class UpdateTests(unittest.TestCase):
             other = Path(folder) / 'other.mp4'
             other.write_bytes(b'video')
             with self.assertRaises(ValueError): updater.open_export(str(other))
+
+    def test_export_folder_still_opens_when_video_was_moved(self):
+        with tempfile.TemporaryDirectory() as folder:
+            updater = DesktopUpdater('.', '.', folder)
+            destination = Path(folder) / '歌谱 视频'
+            destination.mkdir()
+            updater._window = Mock()
+            updater._window.create_file_dialog.return_value = [str(destination)]
+            updater.choose_export_directory()
+            missing_video = destination / '歌曲-square.mp4'
+            with patch('desktop.updater.os.startfile', create=True) as launch:
+                self.assertTrue(updater.open_export(str(missing_video), True))
+                launch.assert_called_once_with(str(destination.resolve()))
+                with self.assertRaisesRegex(ValueError, '移动或删除'):
+                    updater.open_export(str(missing_video))
+                launch.assert_called_once()
 
     def release(self, version='0.1.2', **overrides):
         tag = 'v' + version

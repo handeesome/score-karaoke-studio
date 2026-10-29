@@ -70,6 +70,7 @@ class ExportOptions(BaseModel):
     fps: Literal[30] = 30
     scoreZoom: float = Field(ge=0.5, le=1.5)
     outputDirectory: str | None = None
+    outputPath: str | None = None
 
     @model_validator(mode="after")
     def even_dimensions(self):
@@ -181,16 +182,25 @@ def validate_project(project: dict):
 def _run_export(job_id: str, project: dict, audio_path: Path, output_path: Path, options: ExportOptions):
     with jobs_lock:
         jobs[job_id]["status"] = "running"
+    temporary = output_path.with_name(f'.pujian-{job_id}.tmp.mp4')
     try:
         def update(value: float):
             with jobs_lock:
                 jobs[job_id]["progress"] = round(value, 4)
-        duration = encode_video(project, audio_path, output_path, options.width, options.height, options.fps, options.scoreZoom, progress=update)
+        duration = encode_video(project, audio_path, temporary, options.width, options.height, options.fps, options.scoreZoom, progress=update)
+        if not temporary.is_file() or temporary.stat().st_size == 0:
+            raise RuntimeError('编码结束后未找到完整视频，请重新选择保存文件夹后生成')
+        temporary.replace(output_path)
         with jobs_lock:
             jobs[job_id].update(status="completed", progress=1.0, duration=duration, file=output_path.name, outputPath=str(output_path.resolve()))
     except Exception as error:
         with jobs_lock:
             jobs[job_id].update(status="failed", error=str(error))
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            logging.warning('Cannot remove partial export: %s', temporary)
 
 
 def _run_alignment(job_id: str, project: dict, audio_path: Path, duration: float):
@@ -287,14 +297,17 @@ def start_export(project_id: str, options: ExportOptions):
         raise HTTPException(status_code=422, detail={"errors": report["errors"], "warnings": report["warnings"]})
     job_id = uuid.uuid4().hex
     project_name = safe_filename(project.get("projectName", "score"))
-    destination = Path(options.outputDirectory).expanduser().resolve() if options.outputDirectory else EXPORTS
+    chosen_file = Path(options.outputPath).expanduser().resolve() if options.outputPath else None
+    if chosen_file and chosen_file.suffix.lower() != '.mp4':
+        raise HTTPException(status_code=400, detail="请将视频保存为 MP4 文件")
+    destination = chosen_file.parent if chosen_file else Path(options.outputDirectory).expanduser().resolve() if options.outputDirectory else EXPORTS
     if not destination.is_dir():
         raise HTTPException(status_code=400, detail="所选导出文件夹不存在，请重新选择")
-    output_path = destination / f"{project_name}-{options.preset}-{job_id[:8]}.mp4"
+    output_path = chosen_file or destination / f"{project_name}-{options.preset}-{job_id[:8]}.mp4"
     with jobs_lock:
-        jobs[job_id] = {"status": "queued", "progress": 0.0, "warnings": report["warnings"], "file": None}
+        jobs[job_id] = {"status": "queued", "progress": 0.0, "warnings": report["warnings"], "file": None, "outputPath": str(output_path)}
     executor.submit(_run_export, job_id, project, report["audioPath"], output_path, options)
-    return {"jobId": job_id, "status": "queued", "warnings": report["warnings"]}
+    return {"jobId": job_id, "status": "queued", "warnings": report["warnings"], "outputPath": str(output_path)}
 
 
 @app.get("/api/exports/{job_id}")
