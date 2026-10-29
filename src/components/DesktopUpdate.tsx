@@ -3,7 +3,7 @@ import { Download, LoaderCircle } from 'lucide-react'
 import ActionDialog, { type ActionNotice } from './ActionDialog'
 
 type UpdateState = { status: string; version?: string; progress?: number; error?: string }
-type UpdateApi = { check_update: () => Promise<UpdateState>; update_status: () => Promise<UpdateState>; install_update: () => Promise<UpdateState> }
+type UpdateApi = { check_update: () => Promise<UpdateState>; update_status: () => Promise<UpdateState>; install_update: () => Promise<UpdateState>; choose_export_directory?: () => Promise<string | null>; open_export?: (path: string, folder: boolean) => Promise<boolean> }
 declare global { interface Window { pywebview?: { api: UpdateApi } } }
 
 export default function DesktopUpdate({ busy = false, save }: { busy?: boolean; save: () => void }) {

@@ -11,7 +11,7 @@ export default function TimelineDivider({ height, onChange }: { height: number; 
   useLayoutEffect(() => {
     const layout = ref.current?.closest<HTMLElement>('.main-layout')
     if (!layout) return
-    const elements = ['.workspace-toolbar', '.segmentation-toolbar']
+    const elements = ['.segmentation-toolbar']
       .map(selector => layout.querySelector<HTMLElement>(selector)).filter((element): element is HTMLElement => Boolean(element))
     const measure = () => {
       const fixed = elements.reduce((sum, element) => sum + element.getBoundingClientRect().height, 0)

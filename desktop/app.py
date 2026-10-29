@@ -162,7 +162,7 @@ def smoke_test(data):
         def loaded():
             try:
                 methods = updater._window.evaluate_js('Object.keys(window.pywebview.api).sort()')
-                bridge['ok'] = methods == ['check_update', 'install_update', 'update_status']
+                bridge['ok'] = methods == ['check_update', 'choose_export_directory', 'install_update', 'open_export', 'update_status']
             finally:
                 updater._window.destroy()
         updater._window.events.loaded += loaded

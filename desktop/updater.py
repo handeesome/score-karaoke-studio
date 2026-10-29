@@ -93,6 +93,32 @@ class DesktopUpdater:
         self._lock = threading.Lock()
         self._state = {'status': 'idle'}
         self._candidate = None
+        self._export_folders = {(self._data / 'exports').resolve()}
+
+    def choose_export_directory(self):
+        import webview
+        folder = Path.home() / 'Downloads'
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders') as key:
+                folder = Path(os.path.expandvars(winreg.QueryValueEx(key, '{374DE290-123F-4565-9164-39C4925E467B}')[0]))
+        except (OSError, ImportError):
+            pass
+        selected = self._window.create_file_dialog(webview.FileDialog.FOLDER, directory=str(folder))
+        if not selected:
+            return None
+        target = Path(selected[0]).resolve()
+        if not target.is_dir():
+            raise ValueError('请选择一个现有文件夹')
+        self._export_folders.add(target)
+        return str(target)
+
+    def open_export(self, path, folder=False):
+        target = Path(path).resolve()
+        if target.parent not in self._export_folders or target.suffix.lower() != '.mp4' or not target.is_file():
+            raise ValueError('找不到已导出的视频，请检查保存位置')
+        os.startfile(str(target.parent if folder else target))
+        return True
 
     def update_status(self):
         with self._lock:

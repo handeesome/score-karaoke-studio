@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+import re
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 from backend.runtime import data_root
 from .scrolling import calculate_camera_target, calculate_progress, ease_in_out
@@ -13,17 +14,20 @@ INK_HIGHLIGHT = (222, 75, 45)
 
 
 @lru_cache(maxsize=24)
-def _open_page(path: str, target_width: int) -> Image.Image:
+def _open_page(path: str, target_width: int, inverted: bool = False) -> Image.Image:
     with Image.open(path) as source:
         ratio = target_width / source.width
         target_height = max(1, round(source.height * ratio))
-        return source.convert("RGB").resize((target_width, target_height), Image.Resampling.LANCZOS)
+        image = source.convert("RGB")
+        if inverted:
+            image = ImageOps.invert(image)
+        return image.resize((target_width, target_height), Image.Resampling.LANCZOS)
 
 
 @lru_cache(maxsize=24)
-def _ink_mask(path: str, target_width: int) -> Image.Image:
+def _ink_mask(path: str, target_width: int, inverted: bool = False) -> Image.Image:
     """Opaque on dark printed ink, transparent on paper and pale scan noise."""
-    luminance = _open_page(path, target_width).convert("L")
+    luminance = _open_page(path, target_width, inverted).convert("L")
     values = [max(0, min(255, round(1020 - 5 * value))) for value in range(256)]
     return luminance.point(values)
 
@@ -45,8 +49,9 @@ def resolve_page_path(page: dict, media_dir: Path) -> Path:
 def _page_layout(page: dict, media_dir: Path, width: int, height: int, zoom: float):
     path = resolve_page_path(page, media_dir)
     scaled_width = max(1, round(width * zoom))
-    image = _open_page(str(path), scaled_width)
-    ink_mask = _ink_mask(str(path), scaled_width)
+    inverted = bool(page.get("inverted", False))
+    image = _open_page(str(path), scaled_width, inverted)
+    ink_mask = _ink_mask(str(path), scaled_width, inverted)
     x = (width - image.width) // 2
     y_padding = max(0, (height - image.height) // 2)
     return image, x, y_padding, ink_mask
@@ -139,6 +144,8 @@ def _draw_one(project: dict, at: float, width: int, height: int, zoom: float, sa
     if not project.get("pages"):
         return frame
     mode = project.get("highlight", {}).get("mode", "wipe")
+    color = project.get("highlight", {}).get("color", "")
+    tint_color = tuple(int(color[i:i + 2], 16) for i in (1, 3, 5)) if isinstance(color, str) and re.fullmatch(r'#[0-9a-fA-F]{6}', color) else INK_HIGHLIGHT
     parts, reveals, active = _part_progress(segment, at, mode) if segment else ([], [], 0)
     page_id = parts[active]["pageId"] if segment else project["pages"][0]["id"]
     page = next((p for p in project["pages"] if p["id"] == page_id), project["pages"][0])
@@ -161,7 +168,7 @@ def _draw_one(project: dict, at: float, width: int, height: int, zoom: float, sa
             bottom = min(image.height, top + region_height)
             if right > left and bottom > top:
                 mask = ink_mask.crop((left, top, right, bottom))
-                tint = Image.new("RGB", mask.size, INK_HIGHLIGHT)
+                tint = Image.new("RGB", mask.size, tint_color)
                 frame.paste(tint, (x_offset + left, page_y + top), mask)
     return frame
 

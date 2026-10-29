@@ -14,7 +14,11 @@ export async function loadInkPage(page: ScorePage): Promise<InkPage> {
   const context = canvas.getContext('2d', { willReadFrequently: true })
   if (!context) throw new Error('无法读取乐谱图片')
   context.drawImage(image, 0, 0, canvas.width, canvas.height)
-  return { width: canvas.width, height: canvas.height, pixels: context.getImageData(0, 0, canvas.width, canvas.height).data }
+  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data
+  if (page.inverted) for (let i = 0; i < pixels.length; i += 4) {
+    pixels[i] = 255 - pixels[i]; pixels[i + 1] = 255 - pixels[i + 1]; pixels[i + 2] = 255 - pixels[i + 2]
+  }
+  return { width: canvas.width, height: canvas.height, pixels }
 }
 
 function inkBands(page: InkPage, region: Region, top: number, bottom: number): InkBand[] {

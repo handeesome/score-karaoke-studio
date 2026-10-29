@@ -3,12 +3,13 @@ import type { PagePartition, Segment } from '../types'
 import { addCellCut, addGuide, containsPoint, moveGuide, partitionCells, type PartitionTool } from '../partitions'
 
 type Props = { partition: PagePartition; tool: PartitionTool; blocked?: boolean; selectedLine: string | null; segments: Segment[];
+  onNumber: (key: string) => void;
   onChange: (partition: PagePartition) => void; onLine: (id: string | null) => void;
   onSegment: (id: string | null) => void; onMessage: (text: string) => void;
   onBlocked: () => void; onInvalidCut: () => void;
   onLegacyCut: (segment: Segment, event: React.PointerEvent<SVGGElement>) => void }
 
-export default function PartitionEditor({ partition, tool, blocked, selectedLine, segments, onChange, onLine, onSegment, onMessage, onBlocked, onInvalidCut, onLegacyCut }: Props) {
+export default function PartitionEditor({ partition, tool, blocked, selectedLine, segments, onNumber, onChange, onLine, onSegment, onMessage, onBlocked, onInvalidCut, onLegacyCut }: Props) {
   const [hover, setHover] = useState<{ x: number; y: number } | null>(null)
   const [draft, setDraft] = useState<PagePartition | null>(null)
   const drag = useRef<{ id: string; base: PagePartition; next: PagePartition; horizontal: boolean } | null>(null)
@@ -22,6 +23,11 @@ export default function PartitionEditor({ partition, tool, blocked, selectedLine
     event.stopPropagation(); event.preventDefault()
     if (event.button !== 0) return
     const p = point(event)
+    if (tool === 'number') {
+      const cell = cells.find(cell => !partition.excluded.includes(cell.key) && containsPoint(cell.region, p.x, p.y))
+      if (cell) onNumber(cell.key)
+      return
+    }
     if (id) {
       onSegment(null); onLine(id)
       drag.current = { id, base: partition, next: partition, horizontal }
@@ -67,9 +73,12 @@ export default function PartitionEditor({ partition, tool, blocked, selectedLine
       }
     }} onPointerLeave={() => setHover(null)} onPointerUp={event => {
       event.stopPropagation()
-      if (drag.current) { onChange(drag.current.next); drag.current = null; setDraft(null) }
+      if (drag.current) { if (drag.current.next !== drag.current.base) onChange(drag.current.next); drag.current = null; setDraft(null) }
     }} onPointerCancel={event => { event.stopPropagation(); drag.current = null; setDraft(null) }}>
     <rect width="1000" height="1414" fill="transparent" className="partition-surface"/>
+    {cells.filter(cell => !shown.excluded.includes(cell.key) && !segments.some(segment => segment.partitionKey === cell.key)).map(cell => <g key={`candidate-${cell.key}`} data-cell-key={cell.key} className="partition-candidate unnumbered" pointerEvents="none">
+      <rect x={cell.region.x * 1000} y={cell.region.y * 1414} width={cell.region.width * 1000} height={cell.region.height * 1414}/>
+    </g>)}
     {cells.filter(cell => shown.excluded.includes(cell.key)).map(cell => <g key={cell.key} className="partition-skipped" pointerEvents="none">
       <rect x={cell.region.x * 1000} y={cell.region.y * 1414} width={cell.region.width * 1000} height={cell.region.height * 1414}/>
       <text x={(cell.region.x + cell.region.width / 2) * 1000} y={(cell.region.y + cell.region.height / 2) * 1414}>已跳过</text>

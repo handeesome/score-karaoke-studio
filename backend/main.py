@@ -67,6 +67,7 @@ class ExportOptions(BaseModel):
     height: int = Field(ge=320, le=3840)
     fps: Literal[30] = 30
     scoreZoom: float = Field(ge=0.5, le=1.5)
+    outputDirectory: str | None = None
 
     @model_validator(mode="after")
     def even_dimensions(self):
@@ -184,7 +185,7 @@ def _run_export(job_id: str, project: dict, audio_path: Path, output_path: Path,
                 jobs[job_id]["progress"] = round(value, 4)
         duration = encode_video(project, audio_path, output_path, options.width, options.height, options.fps, options.scoreZoom, progress=update)
         with jobs_lock:
-            jobs[job_id].update(status="completed", progress=1.0, duration=duration, file=output_path.name)
+            jobs[job_id].update(status="completed", progress=1.0, duration=duration, file=output_path.name, outputPath=str(output_path.resolve()))
     except Exception as error:
         with jobs_lock:
             jobs[job_id].update(status="failed", error=str(error))
@@ -284,7 +285,10 @@ def start_export(project_id: str, options: ExportOptions):
         raise HTTPException(status_code=422, detail={"errors": report["errors"], "warnings": report["warnings"]})
     job_id = uuid.uuid4().hex
     project_name = safe_filename(project.get("projectName", "score"))
-    output_path = EXPORTS / f"{project_name}-{options.preset}-{job_id[:8]}.mp4"
+    destination = Path(options.outputDirectory).expanduser().resolve() if options.outputDirectory else EXPORTS
+    if not destination.is_dir():
+        raise HTTPException(status_code=400, detail="所选导出文件夹不存在，请重新选择")
+    output_path = destination / f"{project_name}-{options.preset}-{job_id[:8]}.mp4"
     with jobs_lock:
         jobs[job_id] = {"status": "queued", "progress": 0.0, "warnings": report["warnings"], "file": None}
     executor.submit(_run_export, job_id, project, report["audioPath"], output_path, options)
@@ -306,7 +310,7 @@ def download_export(job_id: str):
         job = jobs.get(job_id)
         if not job or job.get("status") != "completed":
             raise HTTPException(status_code=404, detail="导出文件尚未准备好")
-        path = EXPORTS / job["file"]
+        path = Path(job["outputPath"]) if job.get("outputPath") else EXPORTS / job["file"]
     if not path.is_file():
         raise HTTPException(status_code=404, detail="找不到导出文件")
     return FileResponse(path, media_type="video/mp4", filename=path.name)

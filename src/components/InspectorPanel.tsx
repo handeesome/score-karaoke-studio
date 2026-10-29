@@ -22,7 +22,6 @@ export default function InspectorPanel({ project, selected, selectedCount, timed
     <div className="right-panel-title"><h2>乐句设置</h2><button className="icon-button" aria-label="收起乐句设置" onClick={onClose}><X size={22}/></button></div>
     {segment ? <div className="inspector-card">
       <div className="inspector-selection-heading"><strong>乐句 {String(index + 1).padStart(2, '0')}</strong><span className={assigned ? 'assignment-ready' : 'assignment-pending'}>{assigned ? '已放入时间轴' : '待打点'}</span></div>
-      <p className="inspector-page-label">歌谱第 {project.pages.findIndex(p => p.id === segment.pageId) + 1} 页</p>
       {(['startTime', 'endTime'] as const).map(field => <div className="inspector-time" key={field}>
         <div><span>{field === 'startTime' ? '开始时间' : '结束时间'}</span><output aria-label={field === 'startTime' ? '开始时间' : '结束时间'}>{formatTime(segment[field])}</output></div>
         <div className="inspector-time-actions"><button className="button button-secondary" onClick={() => onSeek(segment[field])}>定位到这里</button><button className="button button-secondary" onClick={() => onTime(segment, field, currentTime)}>设为当前</button></div>

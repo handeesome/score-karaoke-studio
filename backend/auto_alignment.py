@@ -15,7 +15,7 @@ from statistics import median
 from typing import Callable
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 
 
 HAN = re.compile(r"[\u3400-\u9fff]")
@@ -57,6 +57,8 @@ def read_score_rows(pages: list[dict], media_dir: Path,
             continue
         with Image.open(image_path) as source:
             source = source.convert("RGB")
+            if page.get("inverted"):
+                source = ImageOps.invert(source)
             factor = min(1.0, 2200 / source.width)
             image = source.resize((round(source.width * factor), round(source.height * factor)))
             output = io.BytesIO()

@@ -15,7 +15,28 @@ class UpdateTests(unittest.TestCase):
         updater = DesktopUpdater('.', '.', '.')
         updater._window = Mock()
         exposed = {name for name in dir(updater) if not name.startswith('_')}
-        self.assertEqual(exposed, {'check_update', 'update_status', 'install_update'})
+        self.assertEqual(exposed, {'check_update', 'update_status', 'install_update', 'choose_export_directory', 'open_export'})
+
+    def test_export_directory_cancel_and_open_are_limited_to_chosen_folder(self):
+        with tempfile.TemporaryDirectory() as folder:
+            updater = DesktopUpdater('.', '.', folder)
+            updater._window = Mock()
+            updater._window.create_file_dialog.return_value = None
+            self.assertIsNone(updater.choose_export_directory())
+            destination = Path(folder) / 'chosen'
+            destination.mkdir()
+            updater._window.create_file_dialog.return_value = [str(destination)]
+            self.assertEqual(updater.choose_export_directory(), str(destination.resolve()))
+            video = destination / 'result.mp4'
+            video.write_bytes(b'video')
+            with patch('desktop.updater.os.startfile', create=True) as launch:
+                self.assertTrue(updater.open_export(str(video)))
+                launch.assert_called_with(str(video.resolve()))
+                self.assertTrue(updater.open_export(str(video), True))
+                launch.assert_called_with(str(destination.resolve()))
+            other = Path(folder) / 'other.mp4'
+            other.write_bytes(b'video')
+            with self.assertRaises(ValueError): updater.open_export(str(other))
 
     def release(self, version='0.1.2', **overrides):
         tag = 'v' + version

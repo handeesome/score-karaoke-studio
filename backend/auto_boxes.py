@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Callable
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 
 from backend.auto_alignment import read_score_rows, text_in_region
 
@@ -28,9 +28,11 @@ def suggest_boxes(pages: list[dict], media_dir: Path, rows: list[dict] | None = 
             page_paths[page["id"]] = path
 
     page_grays = {}
+    inverted = {page['id'] for page in pages if page.get('inverted')}
     for page_id, path in page_paths.items():
         with Image.open(path) as source:
-            page_grays[page_id] = np.asarray(source.convert("L"))
+            gray = source.convert("L")
+            page_grays[page_id] = np.asarray(ImageOps.invert(gray) if page_id in inverted else gray)
     page_bounds = {}
     page_centers = {}
     for page_id in page_paths:

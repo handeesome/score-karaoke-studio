@@ -6,13 +6,47 @@ import unittest
 from unittest.mock import patch
 
 import imageio_ffmpeg
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from backend.rendering.frame_renderer import render_frame
 from backend.rendering.video_renderer import encode_video
 
 
 class DesktopExportTests(unittest.TestCase):
+    def test_inverted_black_score_tints_letters_and_preserves_paper_in_both_modes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            data = Path(folder)
+            project = self.fixture(data)
+            path = data / 'media/test-project/pages/page-001.png'
+            original = Image.new('RGB', (320, 440), 'black')
+            ImageDraw.Draw(original).rectangle((64, 48, 255, 79), fill='white')
+            original.save(path)
+            project['pages'][0]['inverted'] = True
+            project['segments'][0].update(startTime=1, endTime=3)
+            def frame(at):
+                return render_frame(project, at, 320, 440, media_dir=data / 'media')
+            before = frame(0)
+            self.assertEqual(before.getpixel((100, 60)), (0, 0, 0))
+            self.assertEqual(before.getpixel((40, 60)), (255, 255, 255))
+            full = frame(2)
+            self.assertEqual(full.getpixel((100, 60)), (222, 75, 45))
+            self.assertEqual(full.getpixel((200, 60)), (222, 75, 45))
+            self.assertEqual(full.getpixel((40, 60)), (255, 255, 255))
+            project['highlight']['mode'] = 'wipe'
+            wipe = frame(2)
+            self.assertEqual(wipe.getpixel((100, 60)), (222, 75, 45))
+            self.assertEqual(wipe.getpixel((200, 60)), (0, 0, 0))
+            project['highlight']['color'] = '#1967d2'
+            self.assertEqual(frame(2).getpixel((100, 60)), (25, 103, 210))
+            project['highlight']['color'] = 'invalid'
+            self.assertEqual(frame(2).getpixel((100, 60)), (222, 75, 45))
+            project['pages'][0]['inverted'] = False
+            restored = frame(0)
+            self.assertEqual(restored.getpixel((100, 60)), (255, 255, 255))
+            self.assertEqual(restored.getpixel((40, 60)), (0, 0, 0))
+            with Image.open(path) as source:
+                self.assertEqual(source.tobytes(), original.tobytes())
+
     def fixture(self, data):
         image = data / 'media' / 'test-project' / 'pages' / 'page-001.png'
         image.parent.mkdir(parents=True)

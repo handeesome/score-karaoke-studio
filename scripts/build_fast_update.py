@@ -24,6 +24,7 @@ def main():
     parser.add_argument('--models', type=Path, required=True)
     parser.add_argument('--output-directory', type=Path, default=ROOT / 'release')
     parser.add_argument('--automatic', action='store_true', help='Embed model assets in the EXE; keep the old update ZIP file allowlist')
+    parser.add_argument('--notes-file', type=Path, help='UTF-8 release notes to include in the update archive')
     args = parser.parse_args()
     base, cache, models = args.base_directory.resolve(), args.analysis_cache.resolve(), args.models.resolve()
     validate_models(models)
@@ -113,6 +114,8 @@ exe = EXE(pyz, cached['scripts'], [], exclude_binaries=True, name='Pujian', cons
 歌名换行完整显示；移除常驻操作提示，乐谱获得更多空间。
 修复旧更新器隐藏启动窗口的问题，窗口会避开 Windows 任务栏。
 ''', encoding='utf-8-sig')
+    if args.notes_file:
+        (overlay / '更新说明.txt').write_text(args.notes_file.read_text(encoding='utf-8-sig'), encoding='utf-8-sig')
     with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as package:
         for file in sorted(overlay.rglob('*')):
             if file.is_file():

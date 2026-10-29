@@ -10,7 +10,8 @@ class PartitionDocumentTests(unittest.TestCase):
                           'startTime': 0, 'endTime': 4, 'partitionKey': 'page1:t:b:l:r'}],
             'partitions': [{'pageId': 'page1', 'horizontal': [{'id': 't', 'position': .2}, {'id': 'b', 'position': .3}],
                             'vertical': [{'id': 'l', 'position': .1}, {'id': 'r', 'position': .9}],
-                            'cuts': [], 'excluded': ['skipped']}],
+                            'cuts': [], 'excluded': ['skipped'], 'numberedKeys': ['page1:t:b:l:r'],
+                            'lyricOrder': {'verseCount': 3, 'rows': {'t:b': 1}}}],
             'highlight': {'mode': 'full', 'opacity': .32},
         })
         restored = ProjectDocument.model_validate_json(document.model_dump_json())
