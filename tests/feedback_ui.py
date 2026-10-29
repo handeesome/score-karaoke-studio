@@ -14,7 +14,7 @@ import wave
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from fastapi import FastAPI
+from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import FileResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
@@ -35,10 +35,44 @@ base = {'version': 1, 'projectId': 'feedback-test', 'projectName': '提示测试
 candidate = {'pageId': 'p1', 'region': region, 'sourceText': '歌词示例', 'row': 1, 'part': 1}
 control = {'wave_error': False, 'save_error': False, 'validate_error': False, 'errors': [], 'warnings': [], 'boxes': [candidate], 'exports': 0, 'export_requests': [], 'preview_times': []}
 app = FastAPI()
+@app.post('/api/import/audio')
+def import_audio():
+    control['audio_imports'] = control.get('audio_imports', 0) + 1
+    return {'url': f"/media/test.wav?new-audio={control['audio_imports']}", 'duration': 12}
+
+@app.post('/api/import/score')
+async def import_score(files: list[UploadFile] = File(...)):
+    if control.get('score_import_error'): return JSONResponse({'detail': '测试图片损坏'}, status_code=400)
+    control.setdefault('score_imports', []).append([file.filename for file in files])
+    return {'projectId': f"import-{len(control['score_imports'])}", 'filename': files[0].filename,
+            'pages': [{'id': f'page-{i+1}', 'image': 'data:image/svg+xml,' + quote(score), 'width': 1000, 'height': 1414} for i, _ in enumerate(files)]}
+
 @app.post('/api/waveform/vocals')
-def waveform():
+def waveform(request: dict):
     if control['wave_error']: return JSONResponse({'detail': '测试读取失败'}, status_code=500)
-    return {'status': 'completed', 'waveform': {'duration': 12, 'levels': [.2] * 50, 'peaks': [.3] * 50, 'kind': 'vocals'}}
+    if control.get('wave_pending'): return loading_waveform()
+    if control.get('refinement') and 'new-audio' not in request.get('audioUrl', ''):
+        return {'jobId': 'refinement', 'status': 'completed', 'refining': True, 'waveform': wave_data(.2)}
+    return {'status': 'completed', 'waveform': wave_data(.2)}
+
+def wave_data(level):
+    return {'duration': 12, 'levels': [level] * 50, 'peaks': [level + .1] * 50, 'kind': 'vocals'}
+
+@app.get('/api/waveform/vocals/loading')
+def loading_waveform():
+    if control['wave_error']: return {'jobId': 'loading', 'status': 'failed', 'error': '测试分离失败'}
+    if not control.get('wave_pending'): return {'jobId': 'loading', 'status': 'completed', 'waveform': wave_data(.2)}
+    return {'jobId': 'loading', 'status': 'running', 'stage': '正在分离人声', 'progress': 45,
+            'elapsedSeconds': 150, 'lastProgressSeconds': 130, 'completedSegments': 4}
+
+@app.get('/api/waveform/vocals/refinement')
+def refined_waveform():
+    control['refinement_polls'] = control.get('refinement_polls', 0) + 1
+    if control.get('refinement') == 'network-error': return JSONResponse({'detail': '后台读取失败'}, status_code=500)
+    done = control.get('refinement_done', False)
+    if control.get('refinement') == 'switch': time.sleep(2)
+    return {'jobId': 'refinement', 'status': 'completed', 'refining': not done,
+            'waveform': wave_data(.8 if done and control.get('refinement') != 'failed' else .2)}
 @app.get('/media/test.wav')
 async def audio(): return Response(content=(DATA / 'test.wav').read_bytes(),media_type='audio/wav')
 @app.put('/api/projects/{project_id}')
@@ -101,7 +135,7 @@ api = UpdateApi()
 window = webview.create_window('Feedback regression test', 'http://127.0.0.1:18768', hidden='--export-features' not in sys.argv, width=1366, height=900, js_api=api)
 result = {'checks': []}
 phase = -1
-phases = [24, 25, 26] if '--update' in sys.argv else [22, 23] if '--export-features' in sys.argv else [20, 21] if '--inversion' in sys.argv else [18, 19] if '--numbering' in sys.argv else [16, 17] if '--layout' in sys.argv else [8, 9, 10] if '--merges' in sys.argv else [11, 12, 13, 14, 15] if '--ux' in sys.argv else list(range(27))
+phases = [33, 34, 35] if '--imports' in sys.argv else [31, 32] if '--transport-keys' in sys.argv else [27, 28, 29, 30] if '--vocal-refinement' in sys.argv else [24, 25, 26] if '--update' in sys.argv else [22, 23] if '--export-features' in sys.argv else [20, 21] if '--inversion' in sys.argv else [18, 19] if '--numbering' in sys.argv else [16, 17] if '--layout' in sys.argv else [8, 9, 10] if '--merges' in sys.argv else [11, 12, 13, 14, 15] if '--ux' in sys.argv else list(range(27))
 
 def js(code): return window.evaluate_js(code)
 def wait(expr, predicate=bool, seconds=8):
@@ -128,7 +162,7 @@ def check(name): result['checks'].append(name)
 def capture(name):
     # Capture simple initial views only; later interaction checks use DOM geometry.
     if '--no-capture' in sys.argv: return
-    if name not in ('editor-large.png', 'editor-compact.png', 'update-controls-24.png', 'update-controls-26.png'): return
+    if name not in ('editor-large.png', 'editor-compact.png', 'update-controls-24.png', 'update-controls-26.png', 'timeline-progress-zoom.png', 'score-import-pages.png'): return
     from System import Action
     from System.IO import FileStream, FileMode
     from Microsoft.Web.WebView2.Core import CoreWebView2CapturePreviewImageFormat
@@ -787,15 +821,192 @@ def update_modal():
         capture(f'update-controls-{phase}.png')
     check(f'Update blocks pointer, focus and shortcuts; survives Escape; unlocks on failure and supports retry (phase {phase})')
 
-cases = [legacy, automatic, exporting, waveform_failure, score_zoom, wipe_timing, full_timing, full_reopen, merge_wipe, merge_full, merge_reopen, readability, preferences_reopen, marking, cursor_wipe, cursor_full, editor_layout, editor_layout_reopen, manual_numbering, automatic_numbering, inversion, inversion_reopen, export_features, export_features_reopen, update_modal, update_modal, update_modal]
+def vocal_refinement():
+    wait('Boolean(document.querySelector(".waveform-svg"))')
+    before = js('document.querySelector(".waveform-levels").getAttribute("d")')
+    saved = state()
+    assert not js('Boolean(document.querySelector(".vocal-progress, .waveform-feedback, .action-dialog, .toast"))')
+    control['refinement_done'] = True
+    if phase == 30:
+        until = time.monotonic() + 8
+        while not control.get('refinement_polls'):
+            assert time.monotonic() < until
+            time.sleep(.05)
+        js('''(() => {const input=document.querySelector('input[accept^="audio/"]');const data=new DataTransfer();data.items.add(new File([new Uint8Array(44)],'new.wav',{type:'audio/wav'}));input.files=data.files;input.dispatchEvent(new Event('change',{bubbles:true}))})()''')
+        wait('document.querySelector("audio").src.includes("blob:")')
+        wait('Boolean(document.querySelector(".waveform-svg"))')
+        time.sleep(3)
+        # Replacing audio has its own existing toast; refinement adds none.
+        wait('!document.querySelector(".toast")')
+    elif phase == 27:
+        wait('document.querySelector(".waveform-levels").getAttribute("d") !== ' + json.dumps(before))
+        assert state() == saved, 'Refinement changed project timings'
+    else:
+        until = time.monotonic() + 8
+        while not control.get('refinement_polls'):
+            assert time.monotonic() < until
+            time.sleep(.1)
+        time.sleep(.3)
+    if phase != 27:
+        assert js('document.querySelector(".waveform-levels").getAttribute("d")') == before
+    assert not js('Boolean(document.querySelector(".vocal-progress, .waveform-feedback, .action-dialog, .toast"))')
+    check(f'Vocal refinement is silent and preserves usable waveform (phase {phase})')
+
+def transport_keys():
+    js('''(() => {
+        const a=document.querySelector('audio');window.transportCalls={play:0,pause:0};let paused=true;
+        Object.defineProperty(a,'paused',{get:()=>paused,configurable:true});
+        Object.defineProperty(a,'currentTime',{value:2,writable:true,configurable:true});
+        a.play=()=>{paused=false;window.transportCalls.play++;a.dispatchEvent(new Event('play'));return Promise.resolve()};
+        a.pause=()=>{paused=true;window.transportCalls.pause++;a.dispatchEvent(new Event('pause'))};
+        document.querySelector('.play-button').click();
+    })()''')
+    wait('document.querySelector(".play-button").getAttribute("aria-label")==="暂停播放"')
+    js('document.querySelector(".flag-button").focus(); document.querySelector(".flag-button").click()')
+    time.sleep(.15)
+    assert js('document.activeElement.classList.contains("flag-button")')
+    assert len(state()['flags']) == 1
+    before = state()
+    # Move far enough that accidental activation would record another point.
+    js('document.querySelector("audio").currentTime=4')
+    def space(repeat=False):
+        return js('''(() => {const e=new KeyboardEvent('keydown',{key:' ',code:'Space',bubbles:true,cancelable:true,repeat:''' + str(repeat).lower() + '''});document.activeElement.dispatchEvent(e);document.activeElement.dispatchEvent(new KeyboardEvent('keyup',{key:' ',code:'Space',bubbles:true,cancelable:true}));return e.defaultPrevented})()''')
+    assert space(), 'Focused mark button must cancel native Space activation'
+    wait('document.querySelector(".play-button").getAttribute("aria-label")==="播放音频"')
+    assert js('window.transportCalls') == {'play': 1, 'pause': 1}
+    assert state() == before, 'Space added or changed timing after clicking Mark'
+    assert space(repeat=True)
+    assert js('window.transportCalls') == {'play': 1, 'pause': 1}, 'Held Space toggled playback repeatedly'
+    assert space()
+    wait('document.querySelector(".play-button").getAttribute("aria-label")==="暂停播放"')
+    assert js('window.transportCalls') == {'play': 2, 'pause': 1}
+    js('document.querySelector(".play-button").focus()')
+    assert space()
+    wait('document.querySelector(".play-button").getAttribute("aria-label")==="播放音频"')
+    assert js('window.transportCalls') == {'play': 2, 'pause': 2}
+    assert state() == before
+    js('document.querySelector(".speed-control select").focus()')
+    assert not space(), 'Speed selector must retain its normal keyboard behavior'
+    js('document.querySelector(".workspace-controls button").focus()')
+    assert not space(), 'Unrelated buttons must retain native keyboard activation'
+    assert js('window.transportCalls') == {'play': 2, 'pause': 2}
+    # Enter still marks when focus is on the canvas/body.
+    js('document.activeElement.blur()')
+    key('Enter', code='Enter')
+    assert len(state()['flags']) == 2
+    click('音频')
+    wait('Boolean(document.querySelector(".action-dialog"))')
+    assert not space(), 'Dialog buttons must keep their native keyboard behavior'
+    assert js('window.transportCalls') == {'play': 2, 'pause': 2}
+    key('Escape')
+    check(f'Space pauses/resumes after mouse marking without adding points; repeat, inputs, dialogs and Enter are handled (phase {phase})')
+
+def select_files(selector, names):
+    js('''(() => {const input=document.querySelector(''' + json.dumps(selector) + ''');const data=new DataTransfer();for(const name of ''' + json.dumps(names) + ''')data.items.add(new File([new Uint8Array(44)],name));input.files=data.files;input.dispatchEvent(new Event('change',{bubbles:true}))})()''')
+
+def drop_files(names, event_type='drop'):
+    return js('''(() => {const data=new DataTransfer();for(const name of ''' + json.dumps(names) + ''')data.items.add(new File([new Uint8Array(44)],name));const e=new DragEvent(''' + json.dumps(event_type) + ''',{dataTransfer:data,bubbles:true,cancelable:true});document.querySelector('.canvas-area,.home-main').dispatchEvent(e);return e.defaultPrevented})()''')
+
+def timeline_progress_zoom():
+    wait('Boolean(document.querySelector(".waveform-svg"))')
+    js('''(() => {const e=document.querySelector('.timeline-scroll'),r=e.getBoundingClientRect();e.dispatchEvent(new WheelEvent('wheel',{bubbles:true,cancelable:true,deltaY:-10000,clientX:r.left+r.width/2,clientY:r.top+10}))})()''')
+    wait('document.querySelector(".timeline-scroll").scrollWidth > document.querySelector(".timeline-scroll").clientWidth * 7.9')
+    control['wave_pending'] = True
+    select_files('input[accept^="audio/"]', ['new.wav'])
+    wait('document.querySelector(".vocal-progress-bar")?.getAttribute("aria-valuenow")==="45"')
+    def visible():
+        return js('''(() => {const v=document.querySelector('.timeline-viewport').getBoundingClientRect(),s=document.querySelector('.timeline-status').getBoundingClientRect(),p=document.querySelector('.vocal-progress-bar').getBoundingClientRect(),heading=document.querySelector('.vocal-progress-heading').getBoundingClientRect();return p.left>=v.left&&p.right<=v.right&&p.top>=v.top&&p.bottom<=v.bottom&&heading.top>=v.top&&heading.bottom<=v.bottom&&Math.abs(s.width-v.width)<2})()''')
+    for fraction in (0, .5, 1):
+        js(f"(() => {{const e=document.querySelector('.timeline-scroll');e.scrollLeft=(e.scrollWidth-e.clientWidth)*{fraction}}})()")
+        assert visible(), f'Progress left viewport at scroll fraction {fraction}'
+    assert js('''(() => {const t=document.querySelector('.toast'),v=document.querySelector('.timeline-panel').getBoundingClientRect();return !t||t.getBoundingClientRect().bottom<=v.top})()'''), 'Import toast covers model progress'
+    capture('timeline-progress-zoom.png')
+    for width, height in [(1024, 768), (1366, 900)]:
+        window.resize(width, height); time.sleep(.2)
+        js("document.querySelector('.timeline-divider').dispatchEvent(new KeyboardEvent('keydown',{key:'Home',bubbles:true}))")
+        assert visible(), 'Progress hidden at minimum timeline height'
+    js("document.querySelector('.timeline-divider').dispatchEvent(new KeyboardEvent('keydown',{key:'End',bubbles:true}))")
+    click('为什么还没完成？')
+    wait('Boolean(document.querySelector(".action-dialog"))')
+    key('Escape')
+    control['wave_error'] = True
+    wait('Boolean(document.querySelector(".waveform-feedback"))')
+    assert js('''(() => {const v=document.querySelector('.timeline-viewport').getBoundingClientRect(),p=document.querySelector('.waveform-feedback').getBoundingClientRect();return p.left>=v.left&&p.right<=v.right})()''')
+    control['wave_error'] = False; control['wave_pending'] = False
+    click('重试读取波形')
+    wait('Boolean(document.querySelector(".waveform-svg"))')
+    assert not js('Boolean(document.querySelector(".timeline-status"))')
+    assert js('document.querySelector(".timeline-scroll").scrollWidth > document.querySelector(".timeline-scroll").clientWidth * 7.9')
+    check('Progress, percentage and retry remain in the viewport at 8x zoom, all scroll positions and compact height')
+
+def score_imports():
+    before = state()
+    select_files('input[accept^="application/pdf"]', ['page2.png', 'page3.png'])
+    wait('document.querySelectorAll(".score-page-nav option").length===3')
+    after = state()
+    assert after['pages'][0] == before['pages'][0]
+    for field in ('segments', 'flags', 'partitions', 'source', 'projectId', 'projectName'):
+        assert after.get(field) == before.get(field), field
+    assert len({p['id'] for p in after['pages']}) == 3
+    assert js('document.querySelector(".score-page-nav select").value') == '1'
+    click('下一页歌谱'); assert js('document.querySelector(".score-page img").alt') == '乐谱第 3 页'
+    click('上一页歌谱'); assert js('document.querySelector(".score-page img").alt') == '乐谱第 2 页'
+    capture('score-import-pages.png')
+    click('撤销'); wait('!document.querySelector(".score-page-nav")')
+    wait('document.querySelector(".score-page img")?.alt==="乐谱第 1 页"')
+    assert len(state()['pages']) == 1 and state()['flags'] == before['flags']
+    click('重做'); wait('document.querySelectorAll(".score-page-nav option").length===3')
+    assert drop_files(['extra.pdf'], 'dragenter')
+    wait('Boolean(document.querySelector(".file-drop-overlay"))')
+    drop_files(['extra.pdf'], 'dragleave'); wait('!document.querySelector(".file-drop-overlay")')
+    assert drop_files(['extra.pdf'])
+    wait('document.querySelectorAll(".score-page-nav option").length===4')
+    assert state()['flags'] == before['flags']
+    stable = state()
+    assert drop_files(['bad.txt'])
+    wait('document.querySelector(".action-dialog h2")?.innerText.includes("暂不支持")')
+    assert state() == stable
+    key('Escape')
+    drop_files(['one.mp3', 'two.wav'])
+    wait('document.querySelector(".action-dialog h2")?.innerText.includes("一份音频")')
+    assert state() == stable
+    key('Escape')
+    control['score_import_error'] = True
+    drop_files(['broken.png'])
+    wait('document.querySelector(".action-dialog h2")?.innerText.includes("没有导入成功")')
+    assert state() == stable
+    control['score_import_error'] = False; key('Escape')
+    drop_files(['last.png', 'new.wav'])
+    wait('document.querySelector(".action-dialog h2")?.innerText.includes("重新设置时间")')
+    assert state() == stable
+    key('Escape'); assert state() == stable
+    drop_files(['last.png', 'new.wav'])
+    wait('Boolean(document.querySelector(".action-dialog"))')
+    dialog('替换音频并导入')
+    wait('document.querySelectorAll(".score-page-nav option").length===5')
+    wait('JSON.parse(localStorage.getItem("pujian-project")).source.audio==="new.wav"')
+    assert not state()['flags'] and all(not s['timingSet'] for s in state()['segments'])
+    check('Multi-file append, page navigation, undo, drop import, validation, failure preservation and audio replacement confirmation work')
+
+def home_file_drop():
+    assert drop_files(['sheet1.png', 'sheet2.png', 'song.wav'], 'dragenter')
+    wait('Boolean(document.querySelector(".file-drop-overlay"))')
+    assert drop_files(['sheet1.png', 'sheet2.png', 'song.wav'])
+    wait('Boolean(document.querySelector(".segmentation-toolbar"))')
+    wait('document.querySelectorAll(".score-page-nav option").length===2')
+    assert state()['source']['audio'] == 'song.wav'
+    assert not js('Boolean(document.querySelector(".file-drop-overlay,.action-dialog"))')
+    check('Dropping score images and audio together on the home screen opens a multi-page project')
+
+cases = [legacy, automatic, exporting, waveform_failure, score_zoom, wipe_timing, full_timing, full_reopen, merge_wipe, merge_full, merge_reopen, readability, preferences_reopen, marking, cursor_wipe, cursor_full, editor_layout, editor_layout_reopen, manual_numbering, automatic_numbering, inversion, inversion_reopen, export_features, export_features_reopen, update_modal, update_modal, update_modal, vocal_refinement, vocal_refinement, vocal_refinement, vocal_refinement, transport_keys, transport_keys, timeline_progress_zoom, score_imports, home_file_drop]
 def loaded():
     global phase
     try:
         if phase >= 0:
-            wait('Boolean(document.querySelector(".home-shell"))' if phase == 26 else 'Boolean(document.querySelector(".segmentation-toolbar"))')
+            wait('Boolean(document.querySelector(".home-shell"))' if phase in (26, 35) else 'Boolean(document.querySelector(".segmentation-toolbar"))')
             js('Element.prototype.setPointerCapture=function(){}; Element.prototype.releasePointerCapture=function(){}')
             time.sleep(.25)
-            if phase >= 5:
+            if phase >= 5 and phase != 35:
                 js('''(() => {const a=document.querySelector('audio');Object.defineProperty(a,'duration',{value:120,configurable:true});a.dispatchEvent(new Event('loadedmetadata'));})()''')
                 time.sleep(.15)
             if phase == 22: window.show()
@@ -805,10 +1016,15 @@ def loaded():
         phase = phases[next_phase]
         fixture = copy.deepcopy(base)
         control['wave_error'] = phase == 3
+        control['wave_pending'] = False
+        control['score_import_error'] = False
+        control['refinement'] = {27: 'success', 28: 'failed', 29: 'network-error', 30: 'switch'}.get(phase)
+        control['refinement_done'] = False
+        control['refinement_polls'] = 0
         control['errors'] = ['第 1 句的结束时间必须晚于开始时间'] if phase == 2 else []
         control['warnings'] = []
         if phase in (1, 2, 25): fixture['highlight']['mode'] = 'wipe'
-        if phase == 26:
+        if phase in (26, 35):
             fixture['source'] = {'pdf': None, 'audio': None}; fixture['pages'] = []; fixture['segments'] = []; fixture['flags'] = []
         if phase in (5, 6, 8, 9):
             fixture['audioDuration'] = 120
@@ -833,6 +1049,11 @@ def loaded():
         if phase == 19: fixture=saved_numbering
         if phase == 21: fixture=saved_inversion
         if phase == 23: fixture=saved_export_features
+        if phase in (31, 32):
+            fixture['highlight']['mode'] = 'wipe' if phase == 31 else 'full'
+            fixture['segments'] = [{**copy.deepcopy(base['segments'][0]), 'id': f's{i}', 'timingSet': False,
+                                    'startTime': i*4, 'endTime': (i+1)*4} for i in range(3)]
+            fixture['flags'] = []
         if phase not in (12,17): js('localStorage.setItem("pujian-display",JSON.stringify({textSize:"large",inspectorOpen:true}))')
         js('localStorage.setItem("pujian-project",' + json.dumps(json.dumps(fixture)) + '); location.reload()')
     except Exception as error:
@@ -849,4 +1070,4 @@ try: webview.start(gui='edgechromium', private_mode=False, storage_path=str(DATA
 finally: timer.cancel(); server.should_exit = True
 print(json.dumps(result, ensure_ascii=True), flush=True)
 (DATA / 'result.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
-assert 'error' not in result and len(result['checks']) == (3 if '--update' in sys.argv else 2 if '--export-features' in sys.argv else 2 if '--inversion' in sys.argv else 2 if '--numbering' in sys.argv else 2 if '--layout' in sys.argv else 3 if '--merges' in sys.argv else 5 if '--ux' in sys.argv else 32), result
+assert 'error' not in result and len(result['checks']) == (3 if '--imports' in sys.argv else 2 if '--transport-keys' in sys.argv else 4 if '--vocal-refinement' in sys.argv else 3 if '--update' in sys.argv else 2 if '--export-features' in sys.argv else 2 if '--inversion' in sys.argv else 2 if '--numbering' in sys.argv else 2 if '--layout' in sys.argv else 3 if '--merges' in sys.argv else 5 if '--ux' in sys.argv else 32), result

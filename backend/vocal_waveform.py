@@ -37,7 +37,15 @@ def cache_key(path: Path) -> str:
     return digest.hexdigest()[:24]
 
 
-def vocal_waveform_for_audio(path: Path, cache_root: Path, update: Callable[[str, dict], None]) -> dict:
+def needs_refinement(waveform: dict, path: Path, cache_root: Path) -> bool:
+    if waveform.get('model'):
+        return waveform['model'] == 'spleeter-2stems-fp16'
+    # Older caches did not record the engine. Only upgrade known fast stems.
+    return any((cache_root / cache_key(path) / 'spleeter-2stems').glob('**/vocals.mp3'))
+
+
+def vocal_waveform_for_audio(path: Path, cache_root: Path, update: Callable[[str, dict], None],
+                             *, engine: str = 'auto') -> dict:
     work_dir = cache_root / cache_key(path)
     with _locks_guard:
         lock = _generation_locks.setdefault(str(work_dir.resolve()), threading.Lock())
@@ -52,18 +60,28 @@ def vocal_waveform_for_audio(path: Path, cache_root: Path, update: Callable[[str
             except (OSError, ValueError):
                 pass
     try:
-        return _generate_vocal_waveform(path, cache_root, update)
+        if engine == 'auto':
+            return _generate_vocal_waveform(path, cache_root, update)
+        return _generate_vocal_waveform(path, cache_root, update, engine=engine)
     finally:
         lock.release()
 
 
-def _generate_vocal_waveform(path: Path, cache_root: Path, update: Callable[[str, dict], None]) -> dict:
+def _generate_vocal_waveform(path: Path, cache_root: Path, update: Callable[[str, dict], None],
+                             *, engine: str = 'auto') -> dict:
     work_dir = cache_root / cache_key(path)
     cached = work_dir / "waveform.json"
     if cached.is_file():
-        logging.info("Vocal cache hit: waveform=%s", cached)
-        return json.loads(cached.read_text(encoding="utf-8"))
-    vocals = next((stem for stem in work_dir.glob("*/**/vocals.mp3") if stem.is_file() and stem.stat().st_size > 0), None)
+        waveform = json.loads(cached.read_text(encoding="utf-8"))
+        if engine == 'auto' or not needs_refinement(waveform, path, cache_root):
+            logging.info("Vocal cache hit: waveform=%s", cached)
+            return waveform
+    # Prefer the original model when both saved stems exist; a refinement must
+    # never accidentally read the fast stem and relabel it as HTDemucs.
+    stems = list(work_dir.glob('htdemucs/**/vocals.mp3'))
+    if engine == 'auto':
+        stems.extend(work_dir.glob('*/**/vocals.mp3'))
+    vocals = next((stem for stem in stems if stem.is_file() and stem.stat().st_size > 0), None)
     if vocals is None and not separator_available():
         raise RuntimeError("尚未安装人声分离组件 Demucs；请按 README 的「人声波形」步骤安装")
 
@@ -85,7 +103,7 @@ def _generate_vocal_waveform(path: Path, cache_root: Path, update: Callable[[str
         environment["TORCH_HOME"] = str(model_dir)
         environment["PATH"] = str(tools_dir) + os.pathsep + environment.get("PATH", "")
         from backend.runtime import local_demucs, local_fast_vocals
-        fast_models = local_fast_vocals()
+        fast_models = local_fast_vocals() if engine == 'auto' else None
         repo = None if fast_models else local_demucs()
         logging.info('Vocal engine=%s', 'spleeter-2stems-fp16' if fast_models else 'htdemucs')
         update("正在加载人声模型" if fast_models or repo else "正在准备人声模型，首次使用可能需要下载",
@@ -97,7 +115,7 @@ def _generate_vocal_waveform(path: Path, cache_root: Path, update: Callable[[str
         progress_file.write_text('{}', encoding='utf-8')
         command = [
             *worker, '--audio', str(path.resolve()), '--output', str(work_dir.resolve()),
-            '--progress-file', str(progress_file.resolve()),
+            '--progress-file', str(progress_file.resolve()), '--engine', engine,
         ]
         if repo:
             command.extend(["--repo", str(repo)])
@@ -105,7 +123,8 @@ def _generate_vocal_waveform(path: Path, cache_root: Path, update: Callable[[str
         latest = {}
         with (work_dir / 'separation.log').open('a', encoding='utf-8') as log:
             process = subprocess.Popen(command, env=environment, cwd=str(Path(__file__).resolve().parent.parent),
-                                       stdout=log, stderr=log, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                                       stdout=log, stderr=log, creationflags=(getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                                           | (getattr(subprocess, 'BELOW_NORMAL_PRIORITY_CLASS', 0) if engine == 'htdemucs' else 0)))
             try:
                 while True:
                     try:
@@ -132,7 +151,8 @@ def _generate_vocal_waveform(path: Path, cache_root: Path, update: Callable[[str
         if code != 0:
             raise RuntimeError('人声分离失败：' + latest.get('error', f'请查看 {progress_file.with_suffix(".jsonl")}'))
 
-        vocals = next((stem for stem in work_dir.glob("*/**/vocals.mp3") if stem.is_file() and stem.stat().st_size > 0), None)
+        stem_root = work_dir / ('spleeter-2stems' if fast_models else 'htdemucs')
+        vocals = next((stem for stem in stem_root.glob('**/vocals.mp3') if stem.is_file() and stem.stat().st_size > 0), None)
     else:
         logging.info("Vocal cache hit: stem=%s; generating waveform only", vocals)
         update("已找到上次分离的人声，正在生成波形", {"phase": "waveform", "progress": 98})
@@ -140,6 +160,7 @@ def _generate_vocal_waveform(path: Path, cache_root: Path, update: Callable[[str
         raise RuntimeError("分离完成，但没有找到人声音轨")
     update("正在生成人声波形", {"phase": "waveform", "progress": 98})
     waveform = {**waveform_for_audio(str(vocals), vocals.stat().st_mtime_ns), "kind": "vocal-rms"}
+    waveform['model'] = 'spleeter-2stems-fp16' if 'spleeter-2stems' == vocals.relative_to(work_dir).parts[0] else 'htdemucs'
     temporary = work_dir / "waveform.tmp"
     temporary.write_text(json.dumps(waveform, ensure_ascii=False), encoding="utf-8")
     temporary.replace(cached)

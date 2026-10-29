@@ -10,6 +10,7 @@ import LyricOrderDialog from './components/LyricOrderDialog'
 import AutoBoxDialog from './components/AutoBoxDialog'
 import ProgressDialog from './components/ProgressDialog'
 import HomeImportView from './components/HomeImportView'
+import FileDropZone from './components/FileDropZone'
 import DesktopUpdate from './components/DesktopUpdate'
 import PartitionEditor from './components/PartitionEditor'
 import ActionDialog, { type ActionNotice, type DialogAction } from './components/ActionDialog'
@@ -48,6 +49,7 @@ function App() {
     } catch { return initialProject }
   })
   const [activePage, setActivePage] = useState(0)
+  useEffect(() => { setActivePage(index => Math.max(0, Math.min(index, project.pages.length - 1))) }, [project.pages.length])
   const [selected, setSelected] = useState<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [mergeTarget, setMergeTarget] = useState<string | null>(null)
@@ -93,6 +95,8 @@ function App() {
   const audioRef = useRef<HTMLAudioElement>(null)
   const scoreInput = useRef<HTMLInputElement>(null)
   const audioInput = useRef<HTMLInputElement>(null)
+  const scoreImportMode = useRef<'append' | 'replace'>('append')
+  const importLock = useRef(false)
   const canvasRef = useRef<HTMLDivElement>(null)
   const pageRef = useRef<HTMLDivElement>(null)
   const scoreZoomAnchor = useRef<{ page: HTMLElement; x: number; y: number; fractionX: number; fractionY: number } | null>(null)
@@ -394,6 +398,11 @@ function App() {
     title, description, tone: 'error', details: error instanceof Error ? error.message : String(error || ''), primary, secondary,
   })
   const chooseScore = () => {
+    scoreImportMode.current = 'append'
+    scoreInput.current?.click()
+  }
+  const chooseReplacementScore = () => {
+    scoreImportMode.current = 'replace'
     if (project.segments.length || project.partitions?.some(p => p.horizontal.length || p.vertical.length)) {
       setNotice({ title: '更换歌谱会清空现有标注', description: `新歌谱导入成功后，将清空这首歌所有页面的分隔线、${project.segments.length} 条乐句和已有打点。音频会保留。取消选择文件不会改变当前项目。`, closeLabel: '保留当前歌谱', primary: { label: '继续选择新歌谱', danger: true, onClick: () => scoreInput.current?.click() } })
     } else scoreInput.current?.click()
@@ -535,11 +544,13 @@ function App() {
     selectOne(null); setTool('select')
     flash('已删除标注，其余乐句的打点已保留', undoAction)
   }
-  const onScore = async (selection?: FileList | null) => {
+  const onScore = async (selection?: FileList | File[] | null, mode = scoreImportMode.current) => {
     const files = Array.from(selection || [])
-    if (!files.length) return
+    if (!files.length || importLock.current) return false
+    importLock.current = true
     setScoreImporting(true)
-    const replacing = Boolean(project.source.pdf)
+    const appending = mode === 'append' && projectRef.current.pages.length > 0
+    const replacing = !appending && Boolean(projectRef.current.source.pdf)
     const form = new FormData(); files.forEach(file => form.append('files', file))
     try {
       const response = await fetch(`${API}/api/import/score`, { method: 'POST', body: form })
@@ -548,18 +559,30 @@ function App() {
         throw new Error(typeof error.detail === 'string' ? error.detail : '乐谱导入失败')
       }
       const data = await response.json()
-      const pages: ScorePage[] = data.pages.map((p: any, i: number) => ({ id: `page-${String(i + 1).padStart(3, '0')}`, image: p.image, width: p.width, height: p.height }))
+      const pages: ScorePage[] = data.pages.map((p: any) => ({ id: `page-${crypto.randomUUID()}`, image: p.image, width: p.width, height: p.height }))
+      if ((appending ? projectRef.current.pages.length : 0) + pages.length > 100) throw new Error('歌谱最多支持 100 页，请减少本次添加的文件')
       audioRef.current?.pause()
+      setPlaying(false)
+      lastHistoryAt.current = 0
+      if (appending) {
+        const firstNewPage = projectRef.current.pages.length
+        setProject(p => ({ ...p, pages: [...p.pages, ...pages] }))
+        setActivePage(firstNewPage); selectOne(null); setSelectedLine(null)
+        flash(`已追加 ${pages.length} 页歌谱，共 ${firstNewPage + pages.length} 页`, undoAction)
+        return true
+      }
       if (audioRef.current) audioRef.current.currentTime = 0
       const scoreName = data.filename.replace(/\.[^.]+$/, '')
-      setProject(p => ({ ...p, projectId: data.projectId, projectName: scoreName, source: { ...p.source, pdf: files.length > 1 ? `${scoreName} 等 ${files.length} 张` : data.filename }, pages, segments: [], flags: [], partitions: [], spareTimings: [] }))
+      setProject(p => ({ ...p, projectId: data.projectId, projectName: scoreName, source: { ...p.source, pdf: files.length > 1 ? `${scoreName} 等 ${files.length} 份` : data.filename }, pages, segments: [], flags: [], partitions: [], spareTimings: [] }))
       setActivePage(0); selectOne(null); setTime(0); setPlaying(false); setTool('row')
       flash(replacing ? '已替换乐谱，原有标注已清空' : `已导入 ${pages.length} 页乐谱`)
-    } catch (error) { fail('歌谱没有导入成功', '请重新选择 PDF 或歌谱图片。若仍失败，请关闭软件后重新打开再试。', error, { label: '重新选择歌谱', onClick: () => scoreInput.current?.click() }) }
-    finally { setScoreImporting(false) }
+      return true
+    } catch (error) { fail('歌谱没有导入成功', '已有歌谱和标注已保留。请检查文件后重新添加。', error, { label: '重新选择歌谱', onClick: () => scoreInput.current?.click() }); return false }
+    finally { importLock.current = false; setScoreImporting(false) }
   }
   const onAudio = async (file?: File) => {
-    if (!file) return
+    if (!file || importLock.current) return
+    importLock.current = true
     setAudioImporting(true)
     const replacing = Boolean(project.source.audio)
     try {
@@ -575,7 +598,27 @@ function App() {
       if (audioRef.current) { audioRef.current.src = url; audioRef.current.load() }
       flash(replacing ? '已替换音频，请重新打点校准时间' : '音频已载入，可以开始播放')
     } catch (error) { fail('音频没有导入成功', '请重新选择 MP3、WAV、M4A 或 OGG 音频。', error, { label: '重新选择音频', onClick: () => audioInput.current?.click() }) }
-    finally { setAudioImporting(false) }
+    finally { importLock.current = false; setAudioImporting(false) }
+  }
+  const importDroppedFiles = (files: File[]) => {
+    if (importLock.current || !files.length) return
+    const scores = files.filter(file => /\.(pdf|jpe?g|png|webp)$/i.test(file.name))
+    const audio = files.filter(file => /\.(mp3|wav|m4a|ogg)$/i.test(file.name))
+    if (scores.length + audio.length !== files.length) {
+      setNotice({ title: '有文件暂不支持', description: '请添加 PDF、JPG、PNG、WebP 歌谱，或 MP3、WAV、M4A、OGG 音频。本次文件尚未导入。' }); return
+    }
+    if (audio.length > 1) {
+      setNotice({ title: '一次只能添加一份音频', description: '每首歌使用一份音频。请保留所需音频后重新拖入，歌谱可以同时添加多份。' }); return
+    }
+    const run = async () => {
+      if (scores.length && !await onScore(scores, 'append')) return
+      if (audio[0]) await onAudio(audio[0])
+    }
+    const current = projectRef.current
+    if (audio[0] && current.source.audio && timedSegmentIds(current).size) {
+      setNotice({ title: '更换音频后需要重新设置时间', description: `新音频导入成功后，会清空已有打点和乐句时间，保留歌谱和分区。${scores.length ? '本次拖入的歌谱会追加到最后。' : ''}`, closeLabel: '保留当前音频', primary: { label: '替换音频并导入', danger: true, onClick: () => { void run() } } }); return
+    }
+    void run()
   }
   const playAudio = (at?: number) => {
     const el = audioRef.current
@@ -651,8 +694,15 @@ function App() {
       if ((event.key === 'Delete' || event.key === 'Backspace') && highlightMode === 'full' && selectedLine && !event.ctrlKey && !event.altKey && !event.metaKey && !event.repeat) {
         event.preventDefault(); deletePartitionLine(); return
       }
-      if (event.target instanceof HTMLElement && event.target.closest('button, a, summary')) return
-      if (event.code === 'Space') { event.preventDefault(); togglePlay() }
+      const focusedControl = target?.closest('button, a, summary')
+      // Space controls playback even after clicking Mark. Cancel the button's
+      // native activation so releasing Space cannot record another point.
+      if (event.code === 'Space' && (!focusedControl || focusedControl.matches('.play-button, .flag-button'))) {
+        event.preventDefault()
+        if (!event.repeat) togglePlay()
+        return
+      }
+      if (focusedControl) return
       if (event.key === 'Enter') { event.preventDefault(); addFlag() }
       if (event.key === 'ArrowLeft') { event.preventDefault(); seek(time - (event.shiftKey ? 1 : .1)) }
       if (event.key === 'ArrowRight') { event.preventDefault(); seek(time + (event.shiftKey ? 1 : .1)) }
@@ -1090,16 +1140,18 @@ function App() {
     {notice && <ActionDialog notice={notice} onClose={() => setNotice(null)}/>}
     {message && <div className="toast" role="status"><Check size={22}/><span>{message.text}</span>{message.action && <button onClick={message.action.onClick}>{message.action.label}</button>}<button className="toast-close" aria-label="关闭通知" onClick={() => setMessage(null)}><X size={20}/></button></div>}
   </>
-  if (!hasScore || !hasAudio) return <>
+  const dropDisabled = scoreImporting || audioImporting || autoBusy || boxBusy || exportBusy || duplicateBusy
+  const replaceScoreControl = <button className="button" onClick={chooseReplacementScore}>替换全部歌谱</button>
+  if (!hasScore || !hasAudio) return <FileDropZone disabled={dropDisabled} onFiles={importDroppedFiles}>
     <HomeImportView scoreName={hasScore ? fileName(project.source.pdf) : null} audioName={hasAudio ? fileName(project.source.audio) : null} scoreImporting={scoreImporting} audioImporting={audioImporting} onChooseScore={chooseScore} onChooseAudio={chooseAudio}/>
     {importControls}
     <div className="home-update"><DisplaySize value={textSize} onChange={setTextSize}/>{updateControl}</div>
     {feedback}
-  </>
+  </FileDropZone>
 
-  return <div className="app-shell">
+  return <FileDropZone disabled={dropDisabled} onFiles={importDroppedFiles}><div className="app-shell">
     <header className="topbar">
-      <div className="topbar-left"><div className="brand"><div className="brand-mark"><Music2 size={17} strokeWidth={2.4} /></div><span>谱间</span><span className="brand-divider"/><span className="product-label">歌谱同步工作台</span></div><div className="highlight-mode-control" role="group" aria-label="文字高亮方式"><span>高亮</span><button type="button" aria-pressed={highlightMode === 'wipe'} title="播放时从左到右逐渐高亮文字" onClick={() => changeHighlightMode('wipe')}>从左到右</button><button type="button" aria-pressed={highlightMode === 'full'} title="乐句开始时整框高亮，直到下一句开始" onClick={() => changeHighlightMode('full')}>整框</button></div><div className="workspace-controls"><button className="file-chip" aria-label="歌谱" title={project.source.pdf ? `点击重新选择乐谱：${project.source.pdf}` : '选择歌谱'} onClick={chooseScore}><FileImage size={20}/><span>歌谱</span></button><button className="file-chip" aria-label="音频" title={project.source.audio ? `点击重新选择音频：${project.source.audio}` : '选择音频'} onClick={chooseAudio}><FileAudio2 size={20}/><span>音频</span></button><button className="button button-secondary inspector-toggle" aria-expanded={inspectorOpen} onClick={() => setInspectorOpen(open => !open)}>{inspectorOpen ? '收起乐句设置' : '乐句设置'}</button></div></div>
+      <div className="topbar-left"><div className="brand"><div className="brand-mark"><Music2 size={17} strokeWidth={2.4} /></div><span>谱间</span><span className="brand-divider"/><span className="product-label">歌谱同步工作台</span></div><div className="highlight-mode-control" role="group" aria-label="文字高亮方式"><span>高亮</span><button type="button" aria-pressed={highlightMode === 'wipe'} title="播放时从左到右逐渐高亮文字" onClick={() => changeHighlightMode('wipe')}>从左到右</button><button type="button" aria-pressed={highlightMode === 'full'} title="乐句开始时整框高亮，直到下一句开始" onClick={() => changeHighlightMode('full')}>整框</button></div><div className="workspace-controls"><button className="file-chip" aria-label="歌谱" title={project.source.pdf ? `继续添加歌谱，当前为：${project.source.pdf}` : '选择歌谱'} onClick={chooseScore}><FileImage size={20}/><span>歌谱</span></button><button className="file-chip" aria-label="音频" title={project.source.audio ? `点击重新选择音频：${project.source.audio}` : '选择音频'} onClick={chooseAudio}><FileAudio2 size={20}/><span>音频</span></button><button className="button button-secondary inspector-toggle" aria-expanded={inspectorOpen} onClick={() => setInspectorOpen(open => !open)}>{inspectorOpen ? '收起乐句设置' : '乐句设置'}</button></div></div>
       <div className="top-actions"><DisplaySize value={textSize} onChange={setTextSize}/>{updateControl}<button className="button button-secondary history-button" title="撤销（Ctrl+Z）" disabled={!undoHistory.current.length} onClick={undoProject}><Undo2 size={22}/>撤销</button><button className="button button-secondary history-button" title="重做（Ctrl+Shift+Z）" disabled={!redoHistory.current.length} onClick={redoProject}><Redo2 size={22}/>重做</button><button className="button button-primary" onClick={openExport}><Upload size={15}/>导出视频</button></div>
     </header>
     <div className={`main-layout ${inspectorOpen ? 'inspector-open' : 'inspector-closed'}`} style={{ '--timeline-height': `${timelineHeight}px` } as CSSProperties}>
@@ -1110,13 +1162,13 @@ function App() {
           {([['line-h', '整页横线'], ['line-v', '整页竖线'], ['cell-cut', '框内竖切']] as const).map(([value, label]) =>
             <button key={value} className={`button compact ${partitionTool === value ? 'button-active' : 'button-quiet'}`} aria-pressed={partitionTool === value} onClick={() => requestPartitionTool(value)}>{label}</button>)}
           <button className={`button ${tool === 'number' ? 'button-active' : 'button-secondary'}`} aria-pressed={tool === 'number'} onClick={startNumbering}>编号</button>
-          <ToolMenu>{invertControl}{colorControl}<button className="button" onClick={requestLyricOrder}>自动编号</button><button className="button" disabled={!project.segments.some(segment => segment.pageId === currentPage?.id && segment.partitionKey)} onClick={restartNumbering}>重新编号</button><button className="button reset-toolbar" disabled={!project.segments.length && !project.partitions?.some(item => item.horizontal.length || item.vertical.length)} onClick={() => setResetOpen(true)}>重新分区</button></ToolMenu>
+          <ToolMenu>{invertControl}{colorControl}{replaceScoreControl}<button className="button" onClick={requestLyricOrder}>自动编号</button><button className="button" disabled={!project.segments.some(segment => segment.pageId === currentPage?.id && segment.partitionKey)} onClick={restartNumbering}>重新编号</button><button className="button reset-toolbar" disabled={!project.segments.length && !project.partitions?.some(item => item.horizontal.length || item.vertical.length)} onClick={() => setResetOpen(true)}>重新分区</button></ToolMenu>
         </div> : <div className="segmentation-toolbar">
           <button className={`button selection-tool ${tool === 'select' ? 'button-active' : 'button-quiet'}`} aria-label="选择工具" title="选择乐句" aria-pressed={tool === 'select'} onClick={() => setTool('select')}><Pointer size={24} aria-hidden="true"/></button>
           <span>歌词框</span>
           <button className={`button ${tool === 'row' ? 'button-active' : 'button-quiet'}`} title="添加标注（N）" aria-pressed={tool === 'row'} onClick={() => setTool(tool === 'row' ? 'select' : 'row')}><span className="horizontal-line-icon"/>添加标注</button>
           <button className={`button ${tool === 'cut' ? 'button-active' : 'button-quiet'}`} aria-pressed={tool === 'cut'} onClick={() => setTool(tool === 'cut' ? 'select' : 'cut')}><span className="vertical-line-icon"/>竖切成框</button>
-          <ToolMenu>{invertControl}{colorControl}
+          <ToolMenu>{invertControl}{colorControl}{replaceScoreControl}
             <button className="button" disabled={boxBusy || !project.pages.length} onClick={() => void startAutoBoxes()}>{boxBusy ? '正在框选' : '自动框选'}</button>
             <button className="button" disabled={duplicateBusy} onClick={() => void duplicateBelow()}>{duplicateBusy ? '正在复制' : '复制到下一行'}</button>
             <button className="button" onClick={mergeSelected}>合并乐句{selectedIds.length > 1 ? ` (${selectedIds.length})` : ''}</button>
@@ -1126,6 +1178,12 @@ function App() {
           {(autoBusy || boxBusy) && <div className="tool-instruction">{autoBusy ? autoStage : '正在查找歌词行和明显留白'}</div>}
         </div>}
 
+        {project.pages.length > 1 && <nav className="score-page-nav" aria-label="歌谱翻页">
+          <button className="button button-secondary" aria-label="上一页歌谱" disabled={activePage === 0} onClick={() => { setActivePage(page => page - 1); selectOne(null); setSelectedLine(null) }}>上一页</button>
+          <select aria-label="歌谱页码" value={Math.min(activePage, project.pages.length - 1)} onChange={event => { setActivePage(Number(event.target.value)); selectOne(null); setSelectedLine(null) }}>{project.pages.map((page, index) => <option key={page.id} value={index}>第 {index + 1} 页 / 共 {project.pages.length} 页</option>)}</select>
+          <button className="button button-secondary" aria-label="下一页歌谱" disabled={activePage >= project.pages.length - 1} onClick={() => { setActivePage(page => page + 1); selectOne(null); setSelectedLine(null) }}>下一页</button>
+          <button className="button button-secondary" onClick={chooseScore} disabled={scoreImporting}>追加歌谱</button>
+        </nav>}
         <div className="canvas-area" ref={canvasRef}>
           {currentPage ? <div className="page-frame" key={currentPage.id} style={{ width: zoom === null ? '100%' : `${Math.round(510 * zoom)}px`, maxWidth: zoom === null ? 'min(960px, calc(100% - 12px))' : undefined }}><div ref={pageRef} className={`score-page ${tool === 'row' ? 'drawing' : ''} ${tool === 'cut' ? 'anchoring' : ''} ${tool === 'select' ? 'marquee-mode' : ''} ${playing ? 'previewing' : ''} ${highlightMode === 'full' ? 'partition-mode' : ''}`} style={{ aspectRatio: `${currentPage.width} / ${currentPage.height}` }} onPointerDown={pagePointerDown} onPointerMove={pagePointerMove} onPointerUp={pagePointerUp} onPointerCancel={pagePointerUp}>
               <img src={currentPage.image.startsWith('data:') || currentPage.image.startsWith('blob:') ? currentPage.image : currentPage.image} alt={`乐谱第 ${activePage + 1} 页`} style={{ filter: currentPage.inverted ? 'invert(1)' : undefined }} draggable={false}/>
@@ -1191,7 +1249,7 @@ function App() {
     {importControls}{feedback}
     {colorOpen && <HighlightColorDialog value={highlightColor} onClose={() => setColorOpen(false)} onApply={color => { lastHistoryAt.current = 0; setProject(previous => ({ ...previous, highlight: { ...previous.highlight, color } })); setColorOpen(false) }}/>}
     {exportOpen && <ExportDialog audioUrl={project.source.audioUrl} playing={previewPlaying} onPlaying={setPreviewPlaying} settings={exportSettings} previewUrl={previewUrl} previewTime={previewTime} duration={duration || project.audioDuration || 0} validation={validation} job={exportJob} busy={exportBusy} validationError={validationError} previewError={previewError} onRetryPreview={() => setPreviewRetry(n => n + 1)} onRecheck={() => { void checkExport() }} onFix={fixExport} onSettings={settings => setExportSettings(settings)} onPreviewTime={setPreviewTime} onExport={() => { void startVideoExport() }} onClose={() => { setPreviewPlaying(false); setExportOpen(false) }}/>}
-  </div>
+  </div></FileDropZone>
 }
 
 export default App

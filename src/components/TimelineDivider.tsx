@@ -11,16 +11,19 @@ export default function TimelineDivider({ height, onChange }: { height: number; 
   useLayoutEffect(() => {
     const layout = ref.current?.closest<HTMLElement>('.main-layout')
     if (!layout) return
+    const timeline = layout.querySelector<HTMLElement>('.timeline-panel')
     const elements = ['.segmentation-toolbar']
       .map(selector => layout.querySelector<HTMLElement>(selector)).filter((element): element is HTMLElement => Boolean(element))
     const measure = () => {
       const fixed = elements.reduce((sum, element) => sum + element.getBoundingClientRect().height, 0)
       const limit = Math.max(MIN_HEIGHT, Math.floor(Math.min(layout.clientHeight * .55, layout.clientHeight - fixed - 172)))
       layout.style.setProperty('--timeline-max-height', `${limit}px`)
+      if (timeline) layout.closest<HTMLElement>('.app-shell')?.style.setProperty('--timeline-toast-bottom', `${timeline.getBoundingClientRect().height + 12}px`)
       setMaximum(limit)
     }
     const observer = new ResizeObserver(measure)
     ;[layout, ...elements].forEach(element => observer.observe(element))
+    if (timeline) observer.observe(timeline)
     measure()
     return () => observer.disconnect()
   }, [])

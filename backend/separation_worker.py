@@ -92,16 +92,20 @@ def main(argv=None):
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--progress-file', type=Path, required=True)
     parser.add_argument('--repo', type=Path)
+    parser.add_argument('--engine', choices=('auto', 'htdemucs'), default='auto')
     args = parser.parse_args(argv)
     args.output.mkdir(parents=True, exist_ok=True)
     reporter = ProgressReporter(args.progress_file)
     try:
         from backend.runtime import local_fast_vocals
-        fast_models = local_fast_vocals()
+        fast_models = local_fast_vocals() if args.engine == 'auto' else None
         if fast_models is not None:
             run_fast(args, reporter, fast_models)
             return
         reporter.write('loading', '正在加载人声模型', None)
+        import torch
+        from backend.fast_vocals import cpu_threads
+        torch.set_num_threads(cpu_threads())
         from demucs.api import Separator, save_audio
         separator = Separator(model='htdemucs', repo=args.repo, device='cpu', shifts=1,
                               segment=7, overlap=.1, jobs=0, progress=False, callback=reporter.callback)

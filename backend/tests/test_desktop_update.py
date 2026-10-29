@@ -143,7 +143,7 @@ class UpdateTests(unittest.TestCase):
     def test_check_rereads_proxy_settings_without_changing_global_opener(self):
         updater = DesktopUpdater('.', '.', '.')
         original = urllib.request._opener
-        releases = json.dumps([self.release('0.1.11')]).encode()
+        releases = json.dumps([self.release('9.9.9')]).encode()
         with patch('desktop.updater.urllib.request.getproxies', side_effect=[{}, {'https': 'http://127.0.0.1:10809'}]) as proxies, \
                 patch('urllib.request.OpenerDirector.open', side_effect=[urllib.error.URLError('offline'), io.BytesIO(releases)]), \
                 patch('desktop.updater.logging.exception'):

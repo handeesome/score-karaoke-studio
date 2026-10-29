@@ -6,6 +6,7 @@ import uuid
 import time
 import json
 import io
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Lock
@@ -26,7 +27,7 @@ from backend.models.project import ProjectDocument
 from backend.auto_alignment import suggest as suggest_alignment
 from backend.auto_boxes import suggest_boxes
 from backend.waveform import waveform_for_audio
-from backend.vocal_waveform import cache_key as vocal_cache_key, separator_available, vocal_waveform_for_audio
+from backend.vocal_waveform import cache_key as vocal_cache_key, needs_refinement, separator_available, vocal_waveform_for_audio
 from backend.rendering.frame_renderer import render_frame
 from backend.rendering.video_renderer import encode_video
 from backend.runtime import data_root, whisper_cache, vocal_cache
@@ -43,6 +44,7 @@ executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="score-export")
 alignment_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="score-alignment")
 box_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="score-boxes")
 vocal_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="score-vocals")
+vocal_refinement_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="score-vocal-refinement")
 jobs: dict[str, dict] = {}
 jobs_lock = Lock()
 alignment_jobs: dict[str, dict] = {}
@@ -330,6 +332,18 @@ def audio_waveform(request: WaveformRequest):
         raise HTTPException(status_code=422, detail=str(error)) from error
 
 
+def _refine_vocal_waveform(job_id: str, path: Path):
+    try:
+        result = vocal_waveform_for_audio(path, VOCAL_CACHE, lambda *_: None, engine='htdemucs')
+        with vocal_lock:
+            vocal_jobs[job_id].update(waveform=result)
+    except Exception:
+        logging.exception('Background vocal refinement failed: %s', path)
+    finally:
+        with vocal_lock:
+            vocal_jobs[job_id].update(refining=False)
+
+
 def _run_vocal_waveform(job_id: str, path: Path):
     with vocal_lock:
         vocal_jobs[job_id].update(status="running", startedAt=time.time())
@@ -339,12 +353,21 @@ def _run_vocal_waveform(job_id: str, path: Path):
 
     try:
         result = vocal_waveform_for_audio(path, VOCAL_CACHE, update)
+        refine = needs_refinement(result, path, VOCAL_CACHE)
         with vocal_lock:
             vocal_jobs[job_id].update(status="completed", stage="人声波形已生成", waveform=result,
-                                      progress=100, finishedAt=time.time())
+                                      progress=100, finishedAt=time.time(), refining=refine)
     except Exception as error:
         with vocal_lock:
             vocal_jobs[job_id].update(status="failed", stage="人声分离失败", error=str(error), finishedAt=time.time())
+        return
+    if refine:
+        try:
+            vocal_refinement_executor.submit(_refine_vocal_waveform, job_id, path)
+        except Exception:
+            logging.exception('Could not schedule background vocal refinement: %s', path)
+            with vocal_lock:
+                vocal_jobs[job_id].update(refining=False)
 
 
 @app.post("/api/waveform/vocals")
@@ -401,17 +424,15 @@ def auto_boxes_status(job_id: str):
 async def import_score(files: list[UploadFile] = File(...)):
     suffixes = [Path(file.filename or "").suffix.lower() for file in files]
     is_pdf = len(files) == 1 and suffixes == [".pdf"]
-    is_images = bool(files) and all(suffix in {".jpg", ".jpeg", ".png", ".webp"} for suffix in suffixes)
-    if not (is_pdf or is_images):
-        raise HTTPException(status_code=400, detail="请选择一个 PDF，或一次选择多张 JPG、PNG、WebP 乐谱图片")
+    if not files or any(suffix not in {'.pdf', '.jpg', '.jpeg', '.png', '.webp'} for suffix in suffixes):
+        raise HTTPException(status_code=400, detail="请选择 PDF 或 JPG、PNG、WebP 乐谱图片，可以多选")
     if len(files) > 100:
         raise HTTPException(status_code=400, detail="乐谱最多支持 100 页")
-    if is_images:
-        def natural_name(file: UploadFile):
-            return [(0, int(part)) if part.isdigit() else (1, part.casefold())
-                    for part in re.split(r"(\d+)", Path(file.filename or "").name)]
-        files = sorted(files, key=natural_name)
-        suffixes = [Path(file.filename or "").suffix.lower() for file in files]
+    def natural_name(file: UploadFile):
+        return [(0, int(part)) if part.isdigit() else (1, part.casefold())
+                for part in re.split(r"(\d+)", Path(file.filename or "").name)]
+    files = sorted(files, key=natural_name)
+    suffixes = [Path(file.filename or "").suffix.lower() for file in files]
     project_id = uuid.uuid4().hex
     project_dir = PROJECTS / project_id
     pages_dir = MEDIA / project_id / "pages"
@@ -419,25 +440,29 @@ async def import_score(files: list[UploadFile] = File(...)):
     pages_dir.mkdir(parents=True)
     pages = []
     try:
-        if is_pdf:
-            raw = await files[0].read()
-            if not raw.startswith(b"%PDF"):
-                raise HTTPException(status_code=400, detail="文件内容不是有效的 PDF")
-            (project_dir / "source.pdf").write_bytes(raw)
-            with fitz.open(stream=raw, filetype="pdf") as document:
-                if document.page_count > 100:
-                    raise HTTPException(status_code=400, detail="PDF 页数过多，请使用不超过 100 页的文件")
-                scale = 240 / 72
-                for index, page in enumerate(document):
-                    pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
-                    filename = f"page-{index + 1:03d}.png"
-                    pixmap.save(pages_dir / filename)
-                    pages.append({"id": f"page-{index + 1:03d}", "image": f"/media/{project_id}/pages/{filename}", "width": pixmap.width, "height": pixmap.height, "pdfWidth": round(page.rect.width, 2), "pdfHeight": round(page.rect.height, 2)})
-        else:
-            for index, (file, suffix) in enumerate(zip(files, suffixes)):
-                raw = await file.read()
-                if not raw:
-                    raise HTTPException(status_code=400, detail=f"第 {index + 1} 张图片是空文件")
+        for index, (file, suffix) in enumerate(zip(files, suffixes)):
+            raw = await file.read()
+            if not raw:
+                raise HTTPException(status_code=400, detail=f"第 {index + 1} 个文件是空文件")
+            source_name = 'source.pdf' if is_pdf else f'source-{index + 1:03d}{suffix}'
+            (project_dir / source_name).write_bytes(raw)
+            if suffix == '.pdf':
+                if not raw.startswith(b'%PDF'):
+                    raise HTTPException(status_code=400, detail='文件内容不是有效的 PDF')
+                with fitz.open(stream=raw, filetype='pdf') as document:
+                    if document.page_count < 1 or len(pages) + document.page_count > 100:
+                        raise HTTPException(status_code=400, detail='歌谱最多支持 100 页，请减少文件或 PDF 页数')
+                    for page in document:
+                        pixmap = page.get_pixmap(matrix=fitz.Matrix(240 / 72, 240 / 72), alpha=False)
+                        page_id = f'page-{len(pages) + 1:03d}'
+                        filename = page_id + '.png'
+                        pixmap.save(pages_dir / filename)
+                        pages.append({'id': page_id, 'image': f'/media/{project_id}/pages/{filename}',
+                                      'width': pixmap.width, 'height': pixmap.height,
+                                      'pdfWidth': round(page.rect.width, 2), 'pdfHeight': round(page.rect.height, 2)})
+            else:
+                if len(pages) >= 100:
+                    raise HTTPException(status_code=400, detail='歌谱最多支持 100 页')
                 with Image.open(io.BytesIO(raw)) as image:
                     if image.format not in {"JPEG", "PNG", "WEBP"}:
                         raise HTTPException(status_code=400, detail=f"第 {index + 1} 张图片内容不是 JPG、PNG 或 WebP")
@@ -448,10 +473,10 @@ async def import_score(files: list[UploadFile] = File(...)):
                         rendered = Image.alpha_composite(Image.new("RGBA", rgba.size, "white"), rgba).convert("RGB")
                     else:
                         rendered = oriented.convert("RGB")
-                filename = f"page-{index + 1:03d}.png"
+                page_id = f'page-{len(pages) + 1:03d}'
+                filename = page_id + '.png'
                 rendered.save(pages_dir / filename)
-                (project_dir / f"source-{index + 1:03d}{suffix}").write_bytes(raw)
-                pages.append({"id": f"page-{index + 1:03d}", "image": f"/media/{project_id}/pages/{filename}", "width": rendered.width, "height": rendered.height})
+                pages.append({"id": page_id, "image": f"/media/{project_id}/pages/{filename}", "width": rendered.width, "height": rendered.height})
     except HTTPException:
         shutil.rmtree(project_dir, ignore_errors=True)
         shutil.rmtree(MEDIA / project_id, ignore_errors=True)

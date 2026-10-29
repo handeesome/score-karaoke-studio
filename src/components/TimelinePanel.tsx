@@ -78,6 +78,14 @@ export default function TimelinePanel({ controls, audioUrl, audioName, duration,
     const controller = new AbortController()
     setLoading(true)
     setStage('正在准备人声波形…')
+    let hasWaveform = false
+    const showWaveform = (data: WaveformData) => {
+      if (!data?.levels?.length || data.peaks?.length !== data.levels.length) throw new Error('波形数据无效')
+      if (controller.signal.aborted) return
+      hasWaveform = true
+      setWaveform(data)
+      setLoading(false)
+    }
     const load = async () => {
       const response = await fetch('/api/waveform/vocals', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ audioUrl }), signal: controller.signal,
@@ -97,12 +105,19 @@ export default function TimelinePanel({ controls, audioUrl, audioName, duration,
         if (!status.ok) throw new Error(result.detail || '无法读取人声提取进度')
       }
       if (result.status === 'failed') throw new Error(result.error || '人声提取失败')
-      result = result.waveform
-      const data = result as WaveformData
-      if (!data?.levels?.length || data.peaks?.length !== data.levels.length) throw new Error('波形数据无效')
-      if (!controller.signal.aborted) setWaveform(data)
+      showWaveform(result.waveform)
+      // Keep the usable fast waveform visible while the original model runs.
+      // Background failures stay silent, and changing audio aborts this watcher.
+      while (result.refining && !controller.signal.aborted) {
+        await new Promise(resolve => window.setTimeout(resolve, 3000))
+        if (controller.signal.aborted) return
+        const status = await fetch(`/api/waveform/vocals/${result.jobId}`, { signal: controller.signal })
+        result = await status.json()
+        if (!status.ok || result.status !== 'completed') return
+        if (!result.refining) showWaveform(result.waveform)
+      }
     }
-    void load().catch(reason => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : '波形读取失败') })
+    void load().catch(reason => { if (!controller.signal.aborted && !hasWaveform) setError(reason instanceof Error ? reason.message : '波形读取失败') })
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
   }, [audioUrl, retry])
@@ -248,6 +263,7 @@ export default function TimelinePanel({ controls, audioUrl, audioName, duration,
         : <>{spareTimings.length > 0 && <button className="button button-primary" onClick={() => onInsertTiming(selectedSegment.id, spareTimings[0].startTime)}>放入下一个未分配时间段</button>}<span className="timeline-pending">第 {segments.indexOf(selectedSegment) + 1} 句待打点，歌谱框已保留</span></>)}</div>
     <div className="timeline-track">
       <div className="wave-label" title={audioName || '未导入音频'}><AudioLines size={13}/><span>{audioName || '未导入音频'}</span></div>
+      <div className="timeline-viewport">
       <div className="timeline-scroll" ref={scrollRef}>
         <div className="timeline-content" style={{ width: `${zoom * 100}%` }}>
           <div className="timeline-progress" onPointerDown={startSeek} onPointerMove={moveSeek} onPointerUp={endSeek} onPointerCancel={event => { if (draggingPointer.current === event.pointerId) draggingPointer.current = null }} onLostPointerCapture={() => { draggingPointer.current = null }}><div className="timeline-progress-fill" style={{ width: `${progress}%` }}/>{flags.map(flag => <button key={flag.id} className="flag-tick" style={{ left: `${Math.max(0, Math.min(100, flag.time / extent * 100))}%` }} title={`打点 ${clock(flag.time)}`} onClick={event => { event.stopPropagation(); onSeek(flag.time) }}/>) }<div className="timeline-progress-knob" style={{ left: `${progress}%` }}/></div>
@@ -256,16 +272,20 @@ export default function TimelinePanel({ controls, audioUrl, audioName, duration,
             <div className="wave-stage" style={{ backgroundSize: `${100 / tickCount}% 100%` }} onPointerDown={startSeek} onPointerMove={moveSeek} onPointerUp={endSeek} onPointerCancel={event => { if (draggingPointer.current === event.pointerId) draggingPointer.current = null }} onLostPointerCapture={() => { draggingPointer.current = null }} role="slider" aria-label="音频时间轴，点击或拖动定位" aria-valuemin={0} aria-valuemax={Math.round(extent)} aria-valuenow={Math.round(time)} tabIndex={audioName ? 0 : -1} onKeyDown={event => { if (event.key === 'ArrowLeft') { event.preventDefault(); onSeek(Math.max(0, time - 1)) } else if (event.key === 'ArrowRight') { event.preventDefault(); onSeek(Math.min(extent, time + 1)) } }}>
               {waveform && <svg className="waveform-svg" viewBox={`0 0 ${waveform.levels.length} 100`} preserveAspectRatio="none" aria-hidden="true"><path d={peakPath} className="waveform-peaks"/><path d={levelPath} className="waveform-levels"/></svg>}
               {spareTimings.map((slot, index) => <button key={`${slot.startTime}-${slot.endTime}-${index}`} className="timeline-spare" style={{ left: `${slot.startTime / extent * 100}%`, width: `${(slot.endTime - slot.startTime) / extent * 100}%` }} title={`未分配时间 ${formatTime(slot.startTime)} 至 ${formatTime(slot.endTime)}`} onPointerDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); onSeek(slot.startTime); if (selectedSegment && !assigned(selectedSegment)) onInsertTiming(selectedSegment.id, slot.startTime) }}>空位</button>)}
-              {!waveform && (loading ? <div className="vocal-progress" aria-label="人声分离进度">
-                <div className="vocal-progress-heading"><span role="status">{stage}</span><span>{vocalProgress?.progress != null ? `${Math.floor(vocalProgress.progress)}%` : '准备中'}</span></div>
-                <div className={`vocal-progress-bar ${vocalProgress?.progress == null ? 'indeterminate' : ''}`} role="progressbar" aria-label="人声分离" aria-valuemin={0} aria-valuemax={100} aria-valuenow={vocalProgress?.progress ?? undefined}><span style={vocalProgress?.progress != null ? { width: `${vocalProgress.progress}%` } : undefined}/></div>
-                <div className="vocal-progress-detail"><span>已用 {clock(elapsed)}{vocalProgress?.completedSegments ? ` · 已完成 ${vocalProgress.completedSegments} 段` : ''}</span>{quietSeconds >= 120 && <button className="vocal-help" onPointerDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); setHelpOpen(true) }}>为什么还没完成？</button>}</div>
-              </div> : error ? <div className="waveform-feedback" onPointerDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()}><div className="feedback-panel feedback-error" role="alert"><strong>人声波形暂时不可用</strong><p>可以重试读取，或继续播放音频手动打点。</p><button className="button button-secondary" onClick={() => setRetry(n => n + 1)}>重试读取波形</button><button className="button button-secondary" onClick={() => setHelpOpen(true)}>查看原因</button></div></div> : <div className="waveform-placeholder"><button className="button button-secondary" onPointerDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); onChooseAudio() }}>选择音频，显示人声波形</button></div>)}
               {segments.map((segment, index) => { if (!assigned(segment)) return null; const shown = previewSegments[index]; return <button key={segment.id} data-segment-id={segment.id} className={`timeline-block ${selected === segment.id ? 'current' : ''}`} style={{ left: `${Math.max(0, Math.min(100, shown.startTime / extent * 100))}%`, width: `${Math.max(0, Math.min(100, shown.endTime / extent * 100)) - Math.max(0, Math.min(100, shown.startTime / extent * 100))}%` }} title={`乐句 ${index + 1} · ${formatTime(shown.startTime)}–${formatTime(shown.endTime)}`} aria-label={`乐句 ${index + 1}，${formatTime(shown.startTime)} 至 ${formatTime(shown.endTime)}，${highlightMode === 'full' ? '按 Delete 从这句重新打点' : '按 Delete 仅移除这句时间'}`} onPointerDown={event => startBlockDrag(event, segment)} onPointerMove={moveBlock} onPointerUp={endBlockDrag} onPointerCancel={() => { blockDrag.current = null; setDraggedSegment(null) }} onLostPointerCapture={() => { blockDrag.current = null; setDraggedSegment(null) }} onClick={event => { event.stopPropagation(); onSelect(segment.id) }} onContextMenu={event => { event.preventDefault(); event.stopPropagation(); onSelect(segment.id); onDeleteTiming(segment.id) }} onKeyDown={event => { if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); event.stopPropagation(); onDeleteTiming(segment.id) } }}><span className="timeline-resize-grip start" aria-hidden="true"/><span className="timeline-block-text">{String(index + 1).padStart(2, '0')}</span><span className="timeline-resize-grip end" aria-hidden="true"/></button> })}
               <div className="timeline-cursor" style={{ left: `${Math.max(0, Math.min(100, time / extent * 100))}%` }}/>
             </div>
           </div>
         </div>
+      </div>
+      {!waveform && <div className="timeline-status" onPointerDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()}>
+        {loading ? <div className="vocal-progress" aria-label="人声分离进度">
+          <div className="vocal-progress-heading"><span role="status">{stage}</span><span>{vocalProgress?.progress != null ? `${Math.floor(vocalProgress.progress)}%` : '准备中'}</span></div>
+          <div className={`vocal-progress-bar ${vocalProgress?.progress == null ? 'indeterminate' : ''}`} role="progressbar" aria-label="人声分离" aria-valuemin={0} aria-valuemax={100} aria-valuenow={vocalProgress?.progress ?? undefined}><span style={vocalProgress?.progress != null ? { width: `${vocalProgress.progress}%` } : undefined}/></div>
+          <div className="vocal-progress-detail"><span>已用 {clock(elapsed)}{vocalProgress?.completedSegments ? ` · 已完成 ${vocalProgress.completedSegments} 段` : ''}</span>{quietSeconds >= 120 && <button className="vocal-help" onClick={() => setHelpOpen(true)}>为什么还没完成？</button>}</div>
+        </div> : error ? <div className="waveform-feedback"><div className="feedback-panel feedback-error" role="alert"><strong>人声波形暂时不可用</strong><p>可以重试读取，或继续播放音频手动打点。</p><button className="button button-secondary" onClick={() => setRetry(n => n + 1)}>重试读取波形</button><button className="button button-secondary" onClick={() => setHelpOpen(true)}>查看原因</button></div></div>
+          : <div className="waveform-placeholder"><button className="button button-secondary" onClick={onChooseAudio}>选择音频，显示人声波形</button></div>}
+      </div>}
       </div>
     </div>
     {helpOpen && <ActionDialog notice={error ? { title: '人声波形读取失败', description: '可以重试读取。波形不可用时，仍可播放音频并手动打点，不需要清空已有标注。', tone: 'error', details: error, primary: { label: '重试读取波形', onClick: () => setRetry(n => n + 1) } } : { title: '人声分离可能需要较长时间', description: '进度会在每段处理完成后更新。可以继续使用其他功能。\n如果长时间没有变化，可按 Ctrl + Shift + Esc 打开任务管理器，查看软件和 Windows 更新是否占用了较多 CPU。已有分离结果会保存，下次打开会直接读取。', tone: 'info', closeLabel: '返回继续使用' }} onClose={() => setHelpOpen(false)}/>}
