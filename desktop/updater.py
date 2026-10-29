@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -128,38 +129,43 @@ class DesktopUpdater:
         with self._lock:
             self._state = state
 
-    def check_update(self):
+    def check_update(self, manual=False):
         if not getattr(sys, 'frozen', False):
             return {'status': 'idle'}
         with self._lock:
-            if self._state['status'] in ('checking', 'downloading', 'installing'):
+            if self._state['status'] in ('checking', 'connecting', 'downloading', 'installing'):
                 return dict(self._state)
             self._state = {'status': 'checking'}
-        threading.Thread(target=self._check, daemon=True).start()
+        threading.Thread(target=self._check, kwargs={'manual': manual}, daemon=True).start()
         return self.update_status()
 
-    def _check(self):
+    def _check(self, manual=False):
         try:
             request = urllib.request.Request(API, headers={'Accept': 'application/vnd.github+json', 'User-Agent': 'Pujian/' + VERSION})
-            with urllib.request.urlopen(request, timeout=15) as response:
+            # urlopen caches its first ProxyHandler for the lifetime of the process.
+            # A fresh opener reads current Windows/environment proxy settings.
+            with urllib.request.build_opener().open(request, timeout=15) as response:
                 releases = json.loads(response.read(2 * 1024**2))
             self._candidate = choose_update(releases)
-            self._set(status='available', version=self._candidate['version']) if self._candidate else self._set(status='idle')
-        except Exception:
+            self._set(status='available', version=self._candidate['version']) if self._candidate else self._set(status='current' if manual else 'idle')
+        except Exception as error:
             logging.exception('Update check failed (offline use is unaffected)')
-            self._set(status='idle')
+            self._set(status='check-error', error=str(error)) if manual else self._set(status='idle')
 
     def install_update(self):
         with self._lock:
             if self._state['status'] not in ('available', 'error') or not self._candidate:
                 return dict(self._state)
-            self._state = {'status': 'downloading', 'progress': 0, 'version': self._candidate['version']}
+            self._state = {'status': 'connecting', 'version': self._candidate['version']}
         threading.Thread(target=self._install, daemon=True).start()
         return self.update_status()
 
     def _install(self):
         try:
-            with urllib.request.urlopen('http://127.0.0.1:18765/api/desktop/update-ready', timeout=5) as response:
+            network = urllib.request.build_opener()
+            # Local readiness checks must not pass through a newly enabled proxy.
+            local = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with local.open('http://127.0.0.1:18765/api/desktop/update-ready', timeout=5) as response:
                 if not json.load(response)['ready']:
                     raise RuntimeError('请等待当前处理完成后再更新。')
             # Probe write access before downloading; no elevation or silent privilege changes.
@@ -170,7 +176,14 @@ class DesktopUpdater:
             archive = stage / 'update.zip'
             digest, received = hashlib.sha256(), 0
             request = urllib.request.Request(candidate['url'], headers={'User-Agent': 'Pujian/' + VERSION})
-            with urllib.request.urlopen(request, timeout=30) as response, archive.open('wb') as output:
+            try:
+                response = network.open(request, timeout=30)
+            except urllib.error.HTTPError:
+                raise  # Keep server errors distinct from an unavailable connection.
+            except (urllib.error.URLError, TimeoutError) as error:
+                raise RuntimeError('无法连接更新服务器。请检查网络或开启代理，再点击“重试更新”，无需重启软件。') from error
+            with response, archive.open('wb') as output:
+                self._set(status='downloading', version=candidate['version'], progress=0)
                 while block := response.read(1024 * 1024):
                     received += len(block)
                     if received > candidate['size']:
@@ -182,7 +195,7 @@ class DesktopUpdater:
                 raise ValueError('更新包校验失败，请重试。')
             base = json.loads((self._bundle / 'build-info.json').read_text(encoding='utf-8'))['version']
             files = extract_patch(archive, stage / 'files', candidate['version'], base)
-            with urllib.request.urlopen('http://127.0.0.1:18765/api/desktop/update-ready', timeout=5) as response:
+            with local.open('http://127.0.0.1:18765/api/desktop/update-ready', timeout=5) as response:
                 if not json.load(response)['ready']:
                     raise RuntimeError('请等待当前处理完成后再更新。')
             # Use this version's trusted installer, never execute a downloaded script directly.

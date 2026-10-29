@@ -15,11 +15,28 @@ import time
 import urllib.request
 import uuid
 
+from fastapi.staticfiles import StaticFiles
+
 SOURCE_ROOT = Path(__file__).resolve().parent.parent
 # PyInstaller embeds resources under _internal; user-supplied models live beside the exe.
 ASSETS = Path(getattr(sys, "_MEIPASS", SOURCE_ROOT))
 BUNDLE = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else SOURCE_ROOT
 PORT = int(os.environ.get('PUJIAN_TEST_PORT', '18765'))  # Tests use an isolated port; normal origin stays stable.
+
+
+class DesktopStaticFiles(StaticFiles):
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        # A persistent WebView can otherwise reuse yesterday's index after an update.
+        response.headers['Cache-Control'] = 'no-cache'
+        return response
+
+
+def frontend_url():
+    from desktop.version import VERSION
+    # The query bypasses an old index cached before revalidation headers existed.
+    # Keep the origin stable so saved projects and display preferences survive.
+    return f'http://127.0.0.1:{PORT}/?v={VERSION}'
 
 
 def configure():
@@ -48,7 +65,6 @@ def command(*args):
 
 def serve():
     import uvicorn
-    from fastapi.staticfiles import StaticFiles
     from backend.main import app
     frontend = ASSETS / "dist"
     if not (frontend / "index.html").is_file():
@@ -70,7 +86,7 @@ def serve():
                     return {"ready": False}
         return {"ready": True}
 
-    app.mount("/", StaticFiles(directory=frontend, html=True), name="desktop-ui")
+    app.mount("/", DesktopStaticFiles(directory=frontend, html=True), name="desktop-ui")
     uvicorn.run(app, host="127.0.0.1", port=PORT, log_config=None, access_log=False)
 
 
@@ -247,7 +263,7 @@ def main():
     try:
         from desktop.updater import DesktopUpdater
         updater = DesktopUpdater(BUNDLE, ASSETS, data)
-        updater._window = webview.create_window("谱间 · 歌谱同步工作台", f"http://127.0.0.1:{PORT}/",
+        updater._window = webview.create_window("谱间 · 歌谱同步工作台", frontend_url(),
                               width=1440, height=960, min_size=(1024, 700), js_api=updater)
         updater._window.events.before_show += lambda: fit_window_to_work_area(updater._window)
         updater._window.events.shown += lambda: reveal_desktop_window(updater._window)

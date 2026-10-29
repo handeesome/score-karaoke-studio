@@ -52,6 +52,9 @@ from PyInstaller.archive.readers import CArchiveReader
 from PyInstaller.config import CONF
 root = Path({str(ROOT)!r})
 cached = dict(zip([item[0] for item in Analysis._GUTS], ast.literal_eval(Path({str(cache)!r}).read_text(encoding='utf-8'))))
+missing = {{'desktop.version', 'desktop.updater', 'desktop.windows_job'}} - {{entry[0] for entry in cached['pure']}}
+if missing:
+    raise RuntimeError('Analysis cache is missing desktop modules: ' + ', '.join(sorted(missing)))
 reader = CArchiveReader({str(base / 'Pujian.exe')!r})
 old = reader.open_embedded_archive(next(n for n in reader.toc if n.endswith('.pyz')))
 assert 'onnxruntime' in old.toc and 'av' in old.toc

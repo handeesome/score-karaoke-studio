@@ -76,18 +76,32 @@ while not server.started:
     time.sleep(.05)
 
 class UpdateApi:
-    def __init__(self): self._installs = 0; self._folder_calls = 0; self._cancel_folder = False
+    def __init__(self):
+        self._installs = 0; self._folder_calls = 0; self._cancel_folder = False
+        self._update_state = {'status': 'available', 'version': '9.9.9'}
+        self._install_state = self._update_state
+        self._checks = 0
+        self._manual_check_state = self._update_state
     def choose_export_directory(self):
         self._folder_calls += 1
         return None if self._cancel_folder else str(DATA)
-    def check_update(self): return {'status': 'available', 'version': '9.9.9'}
-    def update_status(self): return self.check_update()
-    def install_update(self): self._installs += 1; return {'status': 'available', 'version': '9.9.9'}
+    def check_update(self, manual=False):
+        if manual:
+            self._checks += 1
+            time.sleep(.3)
+            self._update_state = self._manual_check_state
+            return self._update_state
+        return {'status': 'available', 'version': '9.9.9'}
+    def update_status(self): return self._update_state
+    def install_update(self):
+        self._installs += 1
+        self._update_state = self._install_state
+        return self._update_state
 api = UpdateApi()
 window = webview.create_window('Feedback regression test', 'http://127.0.0.1:18768', hidden='--export-features' not in sys.argv, width=1366, height=900, js_api=api)
 result = {'checks': []}
 phase = -1
-phases = [22, 23] if '--export-features' in sys.argv else [20, 21] if '--inversion' in sys.argv else [18, 19] if '--numbering' in sys.argv else [16, 17] if '--layout' in sys.argv else [8, 9, 10] if '--merges' in sys.argv else [11, 12, 13, 14, 15] if '--ux' in sys.argv else list(range(24))
+phases = [24, 25, 26] if '--update' in sys.argv else [22, 23] if '--export-features' in sys.argv else [20, 21] if '--inversion' in sys.argv else [18, 19] if '--numbering' in sys.argv else [16, 17] if '--layout' in sys.argv else [8, 9, 10] if '--merges' in sys.argv else [11, 12, 13, 14, 15] if '--ux' in sys.argv else list(range(27))
 
 def js(code): return window.evaluate_js(code)
 def wait(expr, predicate=bool, seconds=8):
@@ -114,7 +128,7 @@ def check(name): result['checks'].append(name)
 def capture(name):
     # Capture simple initial views only; later interaction checks use DOM geometry.
     if '--no-capture' in sys.argv: return
-    if name not in ('editor-large.png', 'editor-compact.png'): return
+    if name not in ('editor-large.png', 'editor-compact.png', 'update-controls-24.png', 'update-controls-26.png'): return
     from System import Action
     from System.IO import FileStream, FileMode
     from Microsoft.Web.WebView2.Core import CoreWebView2CapturePreviewImageFormat
@@ -710,12 +724,75 @@ def export_features_reopen():
     click('撤销') if not js("[...document.querySelectorAll('button')].find(b=>b.textContent==='撤销').disabled") else None
     check('Chosen highlight color survives reopening and the color dialog supports keyboard cancellation')
 
-cases = [legacy, automatic, exporting, waveform_failure, score_zoom, wipe_timing, full_timing, full_reopen, merge_wipe, merge_full, merge_reopen, readability, preferences_reopen, marking, cursor_wipe, cursor_full, editor_layout, editor_layout_reopen, manual_numbering, automatic_numbering, inversion, inversion_reopen, export_features, export_features_reopen]
+def update_modal():
+    before = state()
+    wait('Boolean(document.querySelector(".desktop-update button"))')
+    installs = api._installs
+    for status, label in (('current', '已是最新'), ('check-error', '检查失败')):
+        api._manual_check_state = {'status': status, 'error': '测试网络断开'}
+        checks = api._checks
+        js('document.querySelector(".update-refresh").click()')
+        wait('document.querySelector(".update-refresh")?.disabled')
+        wait('document.querySelector(".update-refresh")?.textContent.includes(' + json.dumps(label) + ')')
+        assert api._checks == checks + 1 and api._installs == installs
+        assert not js('Boolean(document.querySelector(".action-dialog"))')
+    api._manual_check_state = {'status': 'available', 'version': '9.9.9'}
+    js('document.querySelector(".update-refresh").click()')
+    wait('Boolean(document.querySelector(".action-dialog"))')
+    assert api._installs == installs, 'Manual check must offer saving before installing'
+    # Keep the menu open to exercise its stacking context as well as its summary.
+    js('document.querySelector(".tool-menu")?.setAttribute("open", "")')
+    api._install_state = {'status': 'connecting', 'version': '9.9.9'}
+    dialog('保存并开始更新')
+    wait('Boolean(document.querySelector(".update-progress-backdrop[open]"))')
+    for status in ('connecting', 'downloading', 'installing'):
+        api._update_state = {'status': status, 'version': '9.9.9', 'progress': 60}
+        wait('document.querySelector("#update-title")?.textContent.includes(' + json.dumps({'connecting': '正在检查更新连接', 'downloading': '60%', 'installing': '正在安装更新'}[status]) + ')')
+        assert js('document.querySelector(".update-progress-backdrop").matches(":modal")')
+        assert js('''(() => {
+            const dialog = document.querySelector('.update-progress-backdrop');
+            const targets = [...document.querySelectorAll('.tool-menu summary, .tool-menu-items button, .topbar button, .home-choice')].filter(el => !el.disabled);
+            return targets.length > 0 && targets.every(el => {
+                el.focus();
+                if (document.activeElement === el) return false;
+                const r = el.getBoundingClientRect();
+                if (!r.width || !r.height) return true;
+                return dialog.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2));
+            });
+        })()'''), 'Background menu or button accepts focus/pointer input during update'
+        assert js('''(() => {
+            const dialog = document.querySelector('.update-progress-backdrop');
+            return !dialog.dispatchEvent(new Event('cancel', {cancelable: true}));
+        })()'''), 'Escape must not dismiss an active update'
+        key('Escape'); key('Enter'); key('z', ctrlKey=True)
+        assert js('Boolean(document.querySelector(".update-progress-backdrop[open]"))')
+        assert state() == before
+    api._update_state = {'status': 'error', 'version': '9.9.9', 'error': '测试更新失败'}
+    wait('!document.querySelector(".update-progress-backdrop")')
+    assert js('''(() => {
+        const el = document.querySelector('.tool-menu summary, .home-choice');
+        el.focus(); return document.activeElement === el;
+    })()'''), 'Background must become usable after update failure'
+    js('document.querySelector(".desktop-update button").click()')
+    wait('document.querySelector(".action-dialog h2")?.textContent.includes("软件更新没有完成")')
+    api._install_state = {'status': 'downloading', 'version': '9.9.9', 'progress': 0}
+    dialog('重试更新')
+    wait('Boolean(document.querySelector(".update-progress-backdrop[open]"))')
+    api._update_state = api.check_update()
+    wait('!document.querySelector(".update-progress-backdrop")')
+    js('document.querySelector(".tool-menu")?.removeAttribute("open")')
+    if '--update-capture' in sys.argv and phase in (24, 26):
+        window.show()
+        time.sleep(.3)
+        capture(f'update-controls-{phase}.png')
+    check(f'Update blocks pointer, focus and shortcuts; survives Escape; unlocks on failure and supports retry (phase {phase})')
+
+cases = [legacy, automatic, exporting, waveform_failure, score_zoom, wipe_timing, full_timing, full_reopen, merge_wipe, merge_full, merge_reopen, readability, preferences_reopen, marking, cursor_wipe, cursor_full, editor_layout, editor_layout_reopen, manual_numbering, automatic_numbering, inversion, inversion_reopen, export_features, export_features_reopen, update_modal, update_modal, update_modal]
 def loaded():
     global phase
     try:
         if phase >= 0:
-            wait('Boolean(document.querySelector(".segmentation-toolbar"))')
+            wait('Boolean(document.querySelector(".home-shell"))' if phase == 26 else 'Boolean(document.querySelector(".segmentation-toolbar"))')
             js('Element.prototype.setPointerCapture=function(){}; Element.prototype.releasePointerCapture=function(){}')
             time.sleep(.25)
             if phase >= 5:
@@ -730,7 +807,9 @@ def loaded():
         control['wave_error'] = phase == 3
         control['errors'] = ['第 1 句的结束时间必须晚于开始时间'] if phase == 2 else []
         control['warnings'] = []
-        if phase in (1, 2): fixture['highlight']['mode'] = 'wipe'
+        if phase in (1, 2, 25): fixture['highlight']['mode'] = 'wipe'
+        if phase == 26:
+            fixture['source'] = {'pdf': None, 'audio': None}; fixture['pages'] = []; fixture['segments'] = []; fixture['flags'] = []
         if phase in (5, 6, 8, 9):
             fixture['audioDuration'] = 120
             fixture['highlight']['mode'] = 'wipe' if phase in (5, 8) else 'full'
@@ -770,4 +849,4 @@ try: webview.start(gui='edgechromium', private_mode=False, storage_path=str(DATA
 finally: timer.cancel(); server.should_exit = True
 print(json.dumps(result, ensure_ascii=True), flush=True)
 (DATA / 'result.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
-assert 'error' not in result and len(result['checks']) == (2 if '--export-features' in sys.argv else 2 if '--inversion' in sys.argv else 2 if '--numbering' in sys.argv else 2 if '--layout' in sys.argv else 3 if '--merges' in sys.argv else 5 if '--ux' in sys.argv else 29), result
+assert 'error' not in result and len(result['checks']) == (3 if '--update' in sys.argv else 2 if '--export-features' in sys.argv else 2 if '--inversion' in sys.argv else 2 if '--numbering' in sys.argv else 2 if '--layout' in sys.argv else 3 if '--merges' in sys.argv else 5 if '--ux' in sys.argv else 32), result
