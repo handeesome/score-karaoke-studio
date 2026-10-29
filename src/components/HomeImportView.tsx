@@ -15,14 +15,14 @@ export default function HomeImportView({ scoreName, audioName, scoreImporting, a
   return <div className="home-shell">
     <header className="home-header"><div className="home-brand"><span className="home-brand-mark"><Music2 size={20} strokeWidth={2.4}/></span><span>谱间</span></div><span className="home-header-caption">歌谱同步工作台</span></header>
     <main className="home-main">
-      <div className="home-intro"><span className="home-eyebrow">开始使用</span><h1>添加歌谱和音频</h1><p>点击选择，或把文件拖进窗口。歌谱可以一次添加多张。</p></div>
+      <div className="home-intro"><span className="home-eyebrow">开始使用</span><h1>添加歌谱和音频</h1><p>选择一份歌谱开始新项目，也可以把文件拖进窗口。</p></div>
       <div className="home-choices">
-        <button type="button" className={`home-choice home-score ${scoreName ? 'is-ready' : ''}`} disabled={scoreImporting} onClick={onChooseScore} aria-label={scoreName ? `继续添加歌谱，当前为 ${scoreName}` : '添加歌谱'}>
+        <button type="button" className={`home-choice home-score ${scoreName ? 'is-ready' : ''}`} disabled={scoreImporting} onClick={onChooseScore} aria-label={scoreName ? `选择歌谱开始新项目，当前为 ${scoreName}` : '添加歌谱'}>
           <span className="home-choice-top"><span className="home-choice-number">01 / 歌谱</span><span className="home-choice-status" aria-live="polite">{scoreImporting ? <><LoaderCircle className="spin" size={15}/>正在导入</> : scoreName ? <><Check size={15}/>已添加</> : '待添加'}</span></span>
           <span className="home-choice-icon"><FileImage size={29} strokeWidth={1.8}/></span>
           <span className="home-choice-title">{scoreName ? '歌谱已添加' : '添加歌谱'}</span>
           <span className="home-choice-description">PDF 或 JPG、PNG、WebP 图片</span>
-          <span className="home-choice-bottom"><span className="home-choice-file" title={scoreName || undefined}>{scoreName || '选择歌谱文件，可多选'}</span><span className="home-choice-action">{scoreName ? '追加' : '浏览'}<FolderOpen size={17}/></span></span>
+          <span className="home-choice-bottom"><span className="home-choice-file" title={scoreName || undefined}>{scoreName || '选择一个歌谱文件'}</span><span className="home-choice-action">{scoreName ? '新项目' : '浏览'}<FolderOpen size={17}/></span></span>
         </button>
         <button type="button" className={`home-choice home-audio ${audioName ? 'is-ready' : ''}`} disabled={audioImporting} onClick={onChooseAudio} aria-label={audioName ? `重新选择音频，当前为 ${audioName}` : '添加音频'}>
           <span className="home-choice-top"><span className="home-choice-number">02 / 音频</span><span className="home-choice-status" aria-live="polite">{audioImporting ? <><LoaderCircle className="spin" size={15}/>正在导入</> : audioName ? <><Check size={15}/>已添加</> : '待添加'}</span></span>

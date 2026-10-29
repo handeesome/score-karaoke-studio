@@ -14,7 +14,7 @@ button:focus-visible,summary:focus-visible,select:focus-visible,input:focus-visi
 .button-primary{color:#fff;background:var(--green)}
 .icon-button,.icon-button.small,.icon-button.tiny,.page-arrow{width:48px;height:48px;min-height:48px;flex:none;color:#2f412b}
 .segmentation-toolbar .selection-tool{width:48px;min-width:48px;padding:9px;flex:none}
-.topbar{height:auto;min-height:76px;padding:10px 16px;gap:12px;flex-wrap:wrap}
+.topbar{height:auto;min-height:76px;padding:10px 16px;gap:12px;flex-wrap:wrap;z-index:10}
 .topbar-left,.top-actions{gap:10px;flex-wrap:wrap}
 .brand{font-size:var(--ui-heading);gap:8px}.brand-mark{width:40px;height:40px}
 .brand-divider,.product-label,.top-separator,.toolbar-sep{display:none}
@@ -159,9 +159,13 @@ input[type="checkbox"]{width:24px;height:24px;flex:none}.auto-box-list label{min
 .timeline-status .vocal-progress-detail>span{display:inline}
 .timeline-status .waveform-feedback,.timeline-status .waveform-placeholder{position:static;inset:auto;width:100%}
 .timeline-status .waveform-placeholder{pointer-events:auto}
-.score-page-nav{display:flex;align-items:center;gap:8px;padding:6px 12px;flex:none;flex-wrap:wrap;border-bottom:1px solid #cdd5c6;background:#fff}
+.score-tool-actions{display:flex;align-items:center;gap:8px;flex:none;flex-wrap:nowrap}
+.score-page-nav{display:flex;align-items:center;gap:6px;padding:0;flex:none;flex-wrap:nowrap;white-space:nowrap}
 .score-page-nav .button,.score-page-nav select{min-height:44px;font-size:var(--ui-secondary)}
 .score-page-nav select{padding:6px 8px;border:1px solid #87977f;border-radius:6px;background:#fff;color:#20291f}
+.button.score-delete{min-height:44px;font-size:var(--ui-secondary);white-space:nowrap}
+.button.score-delete:not(:disabled){color:#9b241c;border-color:#aa6255;background:#fff5f3}
+.button.score-delete:hover:not(:disabled){background:#fbe2de}
 .file-drop-overlay{position:fixed;inset:12px;z-index:1000;display:grid;place-items:center;padding:20px;border:3px dashed #52704a;border-radius:14px;background:#f5faf0ed;pointer-events:none}
 .file-drop-overlay>div{display:flex;flex-direction:column;align-items:center;gap:14px;text-align:center;color:#294021}
 .file-drop-overlay strong{font-size:calc(var(--ui-heading) + 4px)}

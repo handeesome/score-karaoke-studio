@@ -2,6 +2,7 @@
 
 Run after npm run build: .venv\Scripts\python.exe tests\feedback_ui.py
 """
+import base64
 import copy
 import json
 from pathlib import Path
@@ -135,7 +136,7 @@ api = UpdateApi()
 window = webview.create_window('Feedback regression test', 'http://127.0.0.1:18768', hidden='--export-features' not in sys.argv, width=1366, height=900, js_api=api)
 result = {'checks': []}
 phase = -1
-phases = [33, 34, 35] if '--imports' in sys.argv else [31, 32] if '--transport-keys' in sys.argv else [27, 28, 29, 30] if '--vocal-refinement' in sys.argv else [24, 25, 26] if '--update' in sys.argv else [22, 23] if '--export-features' in sys.argv else [20, 21] if '--inversion' in sys.argv else [18, 19] if '--numbering' in sys.argv else [16, 17] if '--layout' in sys.argv else [8, 9, 10] if '--merges' in sys.argv else [11, 12, 13, 14, 15] if '--ux' in sys.argv else list(range(27))
+phases = [40] if '--score-entry' in sys.argv else [36, 37, 39] if '--project-actions' in sys.argv else [33, 34, 35] if '--imports' in sys.argv else [31, 32] if '--transport-keys' in sys.argv else [27, 28, 29, 30] if '--vocal-refinement' in sys.argv else [24, 25, 26] if '--update' in sys.argv else [22, 23] if '--export-features' in sys.argv else [20, 21] if '--inversion' in sys.argv else [18, 19] if '--numbering' in sys.argv else [16, 17] if '--layout' in sys.argv else [8, 9, 10] if '--merges' in sys.argv else [11, 12, 13, 14, 15] if '--ux' in sys.argv else list(range(27))
 
 def js(code): return window.evaluate_js(code)
 def wait(expr, predicate=bool, seconds=8):
@@ -905,7 +906,8 @@ def select_files(selector, names):
     js('''(() => {const input=document.querySelector(''' + json.dumps(selector) + ''');const data=new DataTransfer();for(const name of ''' + json.dumps(names) + ''')data.items.add(new File([new Uint8Array(44)],name));input.files=data.files;input.dispatchEvent(new Event('change',{bubbles:true}))})()''')
 
 def drop_files(names, event_type='drop'):
-    return js('''(() => {const data=new DataTransfer();for(const name of ''' + json.dumps(names) + ''')data.items.add(new File([new Uint8Array(44)],name));const e=new DragEvent(''' + json.dumps(event_type) + ''',{dataTransfer:data,bubbles:true,cancelable:true});document.querySelector('.canvas-area,.home-main').dispatchEvent(e);return e.defaultPrevented})()''')
+    audio_data = json.dumps(base64.b64encode((DATA / 'test.wav').read_bytes()).decode())
+    return js('''(() => {const wav=Uint8Array.from(atob(''' + audio_data + '''),c=>c.charCodeAt(0));const data=new DataTransfer();for(const name of ''' + json.dumps(names) + ''')data.items.add(new File([name.endsWith('.wav')?wav:new Uint8Array(44)],name,{type:name.endsWith('.wav')?'audio/wav':'application/octet-stream'}));const e=new DragEvent(''' + json.dumps(event_type) + ''',{dataTransfer:data,bubbles:true,cancelable:true});document.querySelector('.canvas-area,.home-main').dispatchEvent(e);return e.defaultPrevented})()''')
 
 def timeline_progress_zoom():
     wait('Boolean(document.querySelector(".waveform-svg"))')
@@ -940,28 +942,48 @@ def timeline_progress_zoom():
     check('Progress, percentage and retry remain in the viewport at 8x zoom, all scroll positions and compact height')
 
 def score_imports():
+    window.show()
     before = state()
-    select_files('input[accept^="application/pdf"]', ['page2.png', 'page3.png'])
-    wait('document.querySelectorAll(".score-page-nav option").length===3')
+    select_files('input[aria-label="更多歌谱"]', ['page2.png', 'page3.png'])
+    wait('Number(document.querySelector(".score-page-nav")?.dataset.pageCount)===3')
     after = state()
     assert after['pages'][0] == before['pages'][0]
     for field in ('segments', 'flags', 'partitions', 'source', 'projectId', 'projectName'):
         assert after.get(field) == before.get(field), field
     assert len({p['id'] for p in after['pages']}) == 3
-    assert js('document.querySelector(".score-page-nav select").value') == '1'
+    assert js('document.querySelector(".score-page-nav").dataset.pageIndex') == '1'
     click('下一页歌谱'); assert js('document.querySelector(".score-page img").alt') == '乐谱第 3 页'
     click('上一页歌谱'); assert js('document.querySelector(".score-page img").alt') == '乐谱第 2 页'
     capture('score-import-pages.png')
     click('撤销'); wait('!document.querySelector(".score-page-nav")')
     wait('document.querySelector(".score-page img")?.alt==="乐谱第 1 页"')
     assert len(state()['pages']) == 1 and state()['flags'] == before['flags']
-    click('重做'); wait('document.querySelectorAll(".score-page-nav option").length===3')
+    click('重做'); wait('Number(document.querySelector(".score-page-nav")?.dataset.pageCount)===3')
+    stable = state()
+    drop_files(['new.wav'])
+    wait('document.querySelector(".action-dialog h2")?.innerText.includes("重新设置时间")')
+    assert state() == stable
+    key('Escape')
     assert drop_files(['extra.pdf'], 'dragenter')
     wait('Boolean(document.querySelector(".file-drop-overlay"))')
     drop_files(['extra.pdf'], 'dragleave'); wait('!document.querySelector(".file-drop-overlay")')
+    control['save_error'] = True
+    drop_files(['extra.pdf'])
+    wait('document.querySelector(".action-dialog h2")?.innerText.includes("没有导入成功")')
+    assert state() == stable
+    control['save_error'] = False; key('Escape')
+    audio_src = js('document.querySelector("audio").getAttribute("src")')
     assert drop_files(['extra.pdf'])
-    wait('document.querySelectorAll(".score-page-nav option").length===4')
-    assert state()['flags'] == before['flags']
+    wait('JSON.parse(localStorage.getItem("pujian-project")).projectId!==' + json.dumps(stable['projectId']))
+    replaced = state()
+    assert len(replaced['pages']) == 1 and not replaced['segments'] and not replaced['flags'] and not replaced.get('partitions')
+    assert replaced['source']['audio'] == stable['source']['audio']
+    assert replaced['source']['audioUrl'] == stable['source']['audioUrl'] and replaced['audioDuration'] == stable['audioDuration']
+    assert replaced['source']['pdf'] == 'extra.pdf'
+    assert js('JSON.parse(localStorage.getItem("pujian-previous-project")).flags') == stable['flags']
+    assert js('document.querySelector("audio").getAttribute("src")') == audio_src
+    assert not js('Boolean(document.querySelector(".score-page-nav,.score-delete"))')
+    click('播放'); wait('''(() => {const a=document.querySelector('audio');return {time:a.currentTime,ready:a.readyState,error:a.error?.message,source:a.currentSrc}})()''', lambda value: value['time']>.15); click('暂停')
     stable = state()
     assert drop_files(['bad.txt'])
     wait('document.querySelector(".action-dialog h2")?.innerText.includes("暂不支持")')
@@ -977,36 +999,130 @@ def score_imports():
     assert state() == stable
     control['score_import_error'] = False; key('Escape')
     drop_files(['last.png', 'new.wav'])
-    wait('document.querySelector(".action-dialog h2")?.innerText.includes("重新设置时间")')
-    assert state() == stable
-    key('Escape'); assert state() == stable
-    drop_files(['last.png', 'new.wav'])
-    wait('Boolean(document.querySelector(".action-dialog"))')
-    dialog('替换音频并导入')
-    wait('document.querySelectorAll(".score-page-nav option").length===5')
     wait('JSON.parse(localStorage.getItem("pujian-project")).source.audio==="new.wav"')
-    assert not state()['flags'] and all(not s['timingSet'] for s in state()['segments'])
-    check('Multi-file append, page navigation, undo, drop import, validation, failure preservation and audio replacement confirmation work')
+    assert len(state()['pages']) == 1 and state()['source']['pdf'] == 'last.png'
+    assert not state()['flags'] and not state()['segments']
+    assert not js('Boolean(document.querySelector(".action-dialog"))')
+    blob_src = js('document.querySelector("audio").getAttribute("src")')
+    assert blob_src.startswith('blob:')
+    drop_files(['another.png'])
+    wait('JSON.parse(localStorage.getItem("pujian-project")).source.pdf==="another.png"')
+    assert len(state()['pages']) == 1 and state()['source']['audio'] == 'new.wav'
+    assert js('document.querySelector("audio").getAttribute("src")') == blob_src
+    click('播放'); wait('''(() => {const a=document.querySelector('audio');return {time:a.currentTime,ready:a.readyState,error:a.error?.message,source:a.currentSrc}})()''', lambda value: value['time']>.15); click('暂停')
+    check('Only More scores appends; dropped scores create a clean project preserving playable audio; save/import failures preserve the current project; mixed drops use the supplied audio')
 
 def home_file_drop():
     assert drop_files(['sheet1.png', 'sheet2.png', 'song.wav'], 'dragenter')
     wait('Boolean(document.querySelector(".file-drop-overlay"))')
     assert drop_files(['sheet1.png', 'sheet2.png', 'song.wav'])
     wait('Boolean(document.querySelector(".segmentation-toolbar"))')
-    wait('document.querySelectorAll(".score-page-nav option").length===2')
+    wait('Number(document.querySelector(".score-page-nav")?.dataset.pageCount)===2')
     assert state()['source']['audio'] == 'song.wav'
     assert not js('Boolean(document.querySelector(".file-drop-overlay,.action-dialog"))')
     check('Dropping score images and audio together on the home screen opens a multi-page project')
 
-cases = [legacy, automatic, exporting, waveform_failure, score_zoom, wipe_timing, full_timing, full_reopen, merge_wipe, merge_full, merge_reopen, readability, preferences_reopen, marking, cursor_wipe, cursor_full, editor_layout, editor_layout_reopen, manual_numbering, automatic_numbering, inversion, inversion_reopen, export_features, export_features_reopen, update_modal, update_modal, update_modal, vocal_refinement, vocal_refinement, vocal_refinement, vocal_refinement, transport_keys, transport_keys, timeline_progress_zoom, score_imports, home_file_drop]
+def delete_score_pages():
+    before = state()
+    assert not js('Boolean(document.querySelector(".project-menu"))')
+    click('下一页歌谱')
+    click('删本页')
+    wait('document.querySelector(".action-dialog h2")?.innerText.includes("删除第 2 页")')
+    key('Escape'); assert state() == before
+    click('删本页'); dialog('删除')
+    wait('Number(document.querySelector(".score-page-nav")?.dataset.pageCount)===2')
+    after = state()
+    assert [p['id'] for p in after['pages']] == ['p1', 'p3']
+    assert [s['id'] for s in after['segments']] == ['s1', 's3']
+    assert all(f['segmentId'] != 's2' for f in after['flags'])
+    assert after['source']['audioUrl'] == before['source']['audioUrl']
+    click('撤销'); wait('Number(document.querySelector(".score-page-nav")?.dataset.pageCount)===3')
+    for remaining in (2, 1):
+        click('删本页'); dialog('删除')
+        wait(f'JSON.parse(localStorage.getItem("pujian-project")).pages.length==={remaining}')
+    assert not js('Boolean(document.querySelector(".score-delete,.score-page-nav"))')
+    assert state()['source']['audioUrl'] == before['source']['audioUrl']
+    for _ in range(2): click('撤销')
+    wait('Boolean(document.querySelector(".segmentation-toolbar"))')
+    assert state()['pages'] == before['pages'] and state()['flags'] == before['flags']
+    check(f'Direct page deletion cancels safely, preserves audio and supports undo; the final page hides deletion and navigation (phase {phase})')
+
+
+def home_project_actions():
+    before = state()
+    assert not js('Boolean(document.querySelector(".project-menu"))')
+    assert not js('Boolean(document.querySelector(".score-delete"))')
+    assert state()['pages'] == before['pages'] and not state()['source']['audio']
+    check('A single score page on the home screen has no Delete page or Project menu')
+
+
+def score_entry_rules():
+    before = state()
+    assert not js("document.querySelector('input[aria-label=\"选择新项目歌谱\"]').multiple")
+    assert js("document.querySelector('input[aria-label=\"更多歌谱\"]').multiple")
+    js("""(() => {window.scoreChooserCalls={fresh:0,more:0};document.querySelector('input[aria-label="选择新项目歌谱"]').click=()=>window.scoreChooserCalls.fresh++;document.querySelector('input[aria-label="更多歌谱"]').click=()=>window.scoreChooserCalls.more++})()""")
+    click('歌谱')
+    assert js('window.scoreChooserCalls') == {'fresh': 1, 'more': 0}
+    assert state() == before and not js('Boolean(document.querySelector(".action-dialog"))')
+    select_files('input[aria-label="选择新项目歌谱"]', [])
+    assert state() == before
+    select_files('input[aria-label="选择新项目歌谱"]', ['one.png', 'two.png'])
+    wait('document.querySelector(".action-dialog h2")?.innerText.includes("一次选择")')
+    assert state() == before
+    key('Escape')
+    control['score_import_error'] = True
+    select_files('input[aria-label="选择新项目歌谱"]', ['new.png'])
+    wait('document.querySelector(".action-dialog h2")?.innerText.includes("没有导入成功")')
+    assert state() == before
+    control['score_import_error'] = False; key('Escape')
+    control['save_error'] = True
+    select_files('input[aria-label="选择新项目歌谱"]', ['new.png'])
+    wait('document.querySelector(".action-dialog h2")?.innerText.includes("没有导入成功")')
+    assert state() == before
+    control['save_error'] = False; key('Escape')
+    select_files('input[aria-label="选择新项目歌谱"]', ['new.png'])
+    wait('Boolean(document.querySelector(".home-shell"))')
+    assert len(state()['pages']) == 1 and not state()['segments'] and not state()['flags']
+    assert state()['source']['audio'] is None and state()['source']['pdf'] == 'new.png'
+    assert js('JSON.parse(localStorage.getItem("pujian-previous-project")).flags') == before['flags']
+    select_files('input[accept^="audio/"]', ['new.wav'])
+    wait('Boolean(document.querySelector(".segmentation-toolbar"))')
+    assert not js('Boolean(document.querySelector(".score-page-nav"))')
+    stable = state()
+    js("""(() => {document.querySelector('input[aria-label="更多歌谱"]').click=()=>window.scoreChooserCalls.more++})()""")
+    click('更多歌谱', 'document.querySelector(".tool-menu")')
+    assert js('window.scoreChooserCalls.more') == 1
+    select_files('input[aria-label="更多歌谱"]', ['extra2.png', 'extra3.png'])
+    wait('Number(document.querySelector(".score-page-nav")?.dataset.pageCount)===3')
+    assert state()['source'] == stable['source'] and state()['projectId'] == stable['projectId']
+    def position():
+        return js("""(() => {const n=document.querySelector('.score-page-nav').getBoundingClientRect(),m=document.querySelector('.score-tool-actions>.tool-menu').getBoundingClientRect();return n.left>=m.right&&Math.abs(n.top+n.height/2-m.top-m.height/2)<2&&document.body.scrollWidth<=innerWidth})()""")
+    def delete_position():
+        return js("""(() => {const b=document.querySelector('.score-delete'),d=b.getBoundingClientRect(),n=document.querySelector('.score-page-nav').getBoundingClientRect(),c=getComputedStyle(b).color;return !document.querySelector('.project-menu')&&d.left>=n.right&&Math.abs(d.top+d.height/2-n.top-n.height/2)<2&&d.right<=innerWidth&&c==='rgb(155, 36, 28)'&&b.contains(document.elementFromPoint(d.left+d.width/2,d.top+d.height/2))})()""")
+    for size in [(1366,900),(1024,768)]:
+        window.resize(*size);time.sleep(.2)
+        assert position(), 'Page controls must remain to the right of More tools'
+        assert delete_position(), 'Delete button must stay red and clickable to the right of Next page'
+    click('整框'); assert position(); assert delete_position()
+    click('下一页歌谱'); assert js('document.querySelector(".score-page img").alt') == '乐谱第 3 页'
+    assert js("document.querySelector('[aria-label=\"下一页歌谱\"]').disabled")
+    click('删本页'); dialog('删除')
+    wait('Number(document.querySelector(".score-page-nav")?.dataset.pageCount)===2')
+    click('删本页'); dialog('删除')
+    wait('!document.querySelector(".score-page-nav")')
+    assert len(state()['pages']) == 1
+    assert not js('Boolean(document.querySelector(".score-delete"))')
+    check('Top score chooser starts a new project with one file; More scores appends; red Delete page stays right of Next page for multiple pages and hides for one page; Project menu removed')
+
+cases = [legacy, automatic, exporting, waveform_failure, score_zoom, wipe_timing, full_timing, full_reopen, merge_wipe, merge_full, merge_reopen, readability, preferences_reopen, marking, cursor_wipe, cursor_full, editor_layout, editor_layout_reopen, manual_numbering, automatic_numbering, inversion, inversion_reopen, export_features, export_features_reopen, update_modal, update_modal, update_modal, vocal_refinement, vocal_refinement, vocal_refinement, vocal_refinement, transport_keys, transport_keys, timeline_progress_zoom, score_imports, home_file_drop, delete_score_pages, delete_score_pages, home_project_actions, home_project_actions, score_entry_rules]
 def loaded():
     global phase
     try:
         if phase >= 0:
-            wait('Boolean(document.querySelector(".home-shell"))' if phase in (26, 35) else 'Boolean(document.querySelector(".segmentation-toolbar"))')
+            wait('Boolean(document.querySelector(".home-shell"))' if phase in (26, 35, 38, 39) else 'Boolean(document.querySelector(".segmentation-toolbar"))')
             js('Element.prototype.setPointerCapture=function(){}; Element.prototype.releasePointerCapture=function(){}')
             time.sleep(.25)
-            if phase >= 5 and phase != 35:
+            if phase >= 5 and phase not in (35, 38, 39):
                 js('''(() => {const a=document.querySelector('audio');Object.defineProperty(a,'duration',{value:120,configurable:true});a.dispatchEvent(new Event('loadedmetadata'));})()''')
                 time.sleep(.15)
             if phase == 22: window.show()
@@ -1024,7 +1140,7 @@ def loaded():
         control['errors'] = ['第 1 句的结束时间必须晚于开始时间'] if phase == 2 else []
         control['warnings'] = []
         if phase in (1, 2, 25): fixture['highlight']['mode'] = 'wipe'
-        if phase in (26, 35):
+        if phase in (26, 35, 38):
             fixture['source'] = {'pdf': None, 'audio': None}; fixture['pages'] = []; fixture['segments'] = []; fixture['flags'] = []
         if phase in (5, 6, 8, 9):
             fixture['audioDuration'] = 120
@@ -1054,6 +1170,13 @@ def loaded():
             fixture['segments'] = [{**copy.deepcopy(base['segments'][0]), 'id': f's{i}', 'timingSet': False,
                                     'startTime': i*4, 'endTime': (i+1)*4} for i in range(3)]
             fixture['flags'] = []
+        if phase in (36, 37):
+            fixture['highlight']['mode'] = 'wipe' if phase == 37 else 'full'
+            fixture['pages'] = [{**copy.deepcopy(base['pages'][0]), 'id': f'p{i}'} for i in range(1,4)]
+            fixture['segments'] = [{**copy.deepcopy(base['segments'][0]), 'id': f's{i}', 'pageId': f'p{i}', 'startTime': i*4, 'endTime': (i+1)*4} for i in range(1,4)]
+            fixture['flags'] = [{'id': f'f{i}', 'segmentId': f's{i}', 'time': i*4, 'kind': 'start' if i==1 else 'transition'} for i in range(1,4)]
+        if phase == 39:
+            fixture['source']['audio'] = None; fixture['source']['audioUrl'] = None
         if phase not in (12,17): js('localStorage.setItem("pujian-display",JSON.stringify({textSize:"large",inspectorOpen:true}))')
         js('localStorage.setItem("pujian-project",' + json.dumps(json.dumps(fixture)) + '); location.reload()')
     except Exception as error:
@@ -1070,4 +1193,4 @@ try: webview.start(gui='edgechromium', private_mode=False, storage_path=str(DATA
 finally: timer.cancel(); server.should_exit = True
 print(json.dumps(result, ensure_ascii=True), flush=True)
 (DATA / 'result.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
-assert 'error' not in result and len(result['checks']) == (3 if '--imports' in sys.argv else 2 if '--transport-keys' in sys.argv else 4 if '--vocal-refinement' in sys.argv else 3 if '--update' in sys.argv else 2 if '--export-features' in sys.argv else 2 if '--inversion' in sys.argv else 2 if '--numbering' in sys.argv else 2 if '--layout' in sys.argv else 3 if '--merges' in sys.argv else 5 if '--ux' in sys.argv else 32), result
+assert 'error' not in result and len(result['checks']) == (1 if '--score-entry' in sys.argv else 3 if '--project-actions' in sys.argv else 3 if '--imports' in sys.argv else 2 if '--transport-keys' in sys.argv else 4 if '--vocal-refinement' in sys.argv else 3 if '--update' in sys.argv else 2 if '--export-features' in sys.argv else 2 if '--inversion' in sys.argv else 2 if '--numbering' in sys.argv else 2 if '--layout' in sys.argv else 3 if '--merges' in sys.argv else 5 if '--ux' in sys.argv else 32), result

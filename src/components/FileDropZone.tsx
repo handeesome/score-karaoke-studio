@@ -50,6 +50,6 @@ export default function FileDropZone({ children, disabled, onFiles }: {
     }
   }, [])
   return <>{children}{dragging && !disabled && <div className="file-drop-overlay" role="status">
-    <div><Upload size={36}/><strong>松开鼠标，添加文件</strong><span>支持 PDF、多张歌谱图片和一份音频</span><span>新歌谱会追加到最后</span></div>
+    <div><Upload size={36}/><strong>松开鼠标，添加文件</strong><span>支持 PDF、歌谱图片和一份音频</span><span>拖入歌谱开始新项目，沿用原音频；追加请用“更多歌谱”</span></div>
   </div>}</>
 }
