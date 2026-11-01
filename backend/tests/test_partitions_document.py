@@ -23,6 +23,22 @@ class PartitionDocumentTests(unittest.TestCase):
         document = ProjectDocument.model_validate({'source': {}, 'pages': [], 'segments': []})
         self.assertEqual(document.partitions, [])
 
+    def test_repeated_partition_reference_and_independent_timing_survive_save(self):
+        document = ProjectDocument.model_validate({
+            'source': {}, 'pages': [{'id': 'p1'}],
+            'segments': [
+                {'id': 'original', 'pageId': 'p1', 'region': {'x': .1, 'y': .2, 'width': .8, 'height': .1},
+                 'startTime': 1, 'endTime': 4, 'partitionKey': 'cell', 'timingSet': True},
+                {'id': 'repeat', 'pageId': 'p1', 'region': {'x': .1, 'y': .2, 'width': .8, 'height': .1},
+                 'startTime': 12, 'endTime': 16, 'repeatSourceId': 'original', 'timingSet': False},
+            ], 'highlight': {'mode': 'full'},
+        })
+        restored = ProjectDocument.model_validate_json(document.model_dump_json())
+        self.assertEqual(restored.segments[1].repeatSourceId, 'original')
+        self.assertIsNone(restored.segments[1].partitionKey)
+        self.assertFalse(restored.segments[1].timingSet)
+        self.assertEqual(restored.segments[1].startTime, 12)
+
     def test_merge_spare_times_and_intentionally_removed_timing_survive_save(self):
         document = ProjectDocument.model_validate({
             'source': {}, 'pages': [{'id': 'p1'}],

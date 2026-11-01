@@ -11,7 +11,7 @@ import AutoBoxDialog from './components/AutoBoxDialog'
 import ProgressDialog from './components/ProgressDialog'
 import HomeImportView from './components/HomeImportView'
 import FileDropZone from './components/FileDropZone'
-import { emptyProject, removeScorePages } from './projectActions'
+import { emptyProject, removeScorePages, repeatScoreRegions } from './projectActions'
 import DesktopUpdate from './components/DesktopUpdate'
 import PartitionEditor from './components/PartitionEditor'
 import ActionDialog, { type ActionNotice, type DialogAction } from './components/ActionDialog'
@@ -588,8 +588,8 @@ function App() {
         .map((flag, index) => index === 0 ? { ...flag, kind: 'start' as const } : flag)
       return { ...p, segments, flags }
     })
-    selectOne(null); setTool('select')
-    flash('已删除标注，其余乐句的打点已保留', undoAction)
+    selectOne(null); setTool(highlightMode === 'full' ? 'line-edit' : 'select')
+    flash(source?.repeatSourceId ? '已删除这次重复，原框和其他乐句已保留' : '已删除标注，其余乐句的打点已保留', undoAction)
   }
   const onScore = async (selection?: FileList | File[] | null, mode: 'new' | 'drop' | 'append' = 'new') => {
     const files = Array.from(selection || [])
@@ -830,19 +830,12 @@ function App() {
   const repeatSelectedRegions = () => {
     const sources = project.segments.filter(segment => selectedIds.includes(segment.id))
     if (!sources.length) { setNotice({ title: '先选中要重复使用的歌词框', description: '选择歌词框后，再点击“重复使用选中框”。', primary: { label: '选择歌词框', onClick: chooseRegions } }); return }
-    const assignedIds = new Set((project.flags || []).filter(flag => flag.kind !== 'end').map(flag => flag.segmentId))
-    const lastAssignedEnd = Math.max(0, ...project.segments.filter(segment => segment.timingSet || assignedIds.has(segment.id)).map(segment => segment.endTime))
-    const audioEnd = duration || project.audioDuration || lastAssignedEnd + sources.length * 1.1 + 2
-    const copies = sources.map((source, index): Segment => {
-      const startTime = Math.max(0, Math.min(audioEnd - .1, lastAssignedEnd + index * 1.1))
-      const regions = segmentRegions(source).map(item => ({ pageId: item.pageId, region: { ...item.region } }))
-      return { ...source, partitionKey: undefined, id: `repeat-${Date.now()}-${index}`, pageId: regions[0].pageId, region: regions[0].region,
-        regions: regions.length > 1 ? regions : undefined, startTime, endTime: Math.min(audioEnd, startTime + 1), timingSet: false }
-    })
+    const next = repeatScoreRegions(project, selectedIds, duration, () => `repeat-${crypto.randomUUID()}`)
+    const copies = next.segments.slice(project.segments.length)
     lastHistoryAt.current = 0
-    setProject(previous => ({ ...previous, segments: [...previous.segments, ...copies] }))
+    setProject(next)
     const ids = copies.map(copy => copy.id)
-    setSelectedIds(ids); setSelected(ids[ids.length - 1]); setTool('select')
+    setSelectedIds(ids); setSelected(ids[ids.length - 1]); setTool(highlightMode === 'full' ? 'line-edit' : 'select')
     flash(`已在结尾重复使用 ${copies.length} 个歌词框；新乐句待打点`)
   }
   const duplicateBelow = async () => {

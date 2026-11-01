@@ -3,7 +3,7 @@ export interface ScorePage { id: string; image: string; width: number; height: n
 export interface KaraokeFlag { id: string; time: number; segmentId: string; kind: 'start' | 'transition' | 'end' }
 export interface SegmentRegion { pageId: string; region: Region }
 export interface TimingRange { startTime: number; endTime: number }
-export interface Segment { id: string; pageId: string; region: Region; regions?: SegmentRegion[]; startTime: number; endTime: number; timingSet?: boolean; direction: 'left-to-right'; text?: string; partitionKey?: string }
+export interface Segment { id: string; pageId: string; region: Region; regions?: SegmentRegion[]; startTime: number; endTime: number; timingSet?: boolean; direction: 'left-to-right'; text?: string; partitionKey?: string; repeatSourceId?: string }
 export interface PartitionGuide { id: string; position: number }
 export interface PartitionCut extends PartitionGuide { top: string; bottom: string; left: string; right: string }
 export interface LyricOrder { verseCount: number; rows: Record<string, number> }

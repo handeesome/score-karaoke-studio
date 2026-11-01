@@ -30,8 +30,8 @@ export default function InspectorPanel({ project, selected, selectedCount, timed
       <details className="inspector-more"><summary>更多乐句操作</summary>
         <div className="inspector-order"><label className="field-label" htmlFor="phrase-order">乐句序号</label><div><input id="phrase-order" type="text" inputMode="numeric" value={orderDraft ?? String(index + 1)} onChange={e => onOrderDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); onMoveOrder(segment.id, e.currentTarget.value) } else if (e.key === 'Escape') onOrderDraft(null) }}/><button className="button button-secondary" disabled={orderDraft === null || orderDraft === String(index + 1)} onClick={() => onMoveOrder(segment.id, orderDraft || '')}>移动到此</button></div></div>
         {segmentRegions(segment).length > 1 && <button className="button button-secondary" onClick={() => onReverse(segment.id)}>反转框顺序</button>}
-        {!full && <button className="button button-secondary" onClick={onRepeat}>重复使用选中框{selectedCount > 1 ? `（${selectedCount}）` : ''}</button>}
-        <button className="button button-danger-quiet" onClick={() => onDelete(segment.id)}>{segment.partitionKey ? '跳过此区' : '删除歌谱上的框'}</button>
+        <button className="button button-secondary" onClick={onRepeat}>重复使用选中框{selectedCount > 1 ? `（${selectedCount}）` : ''}</button>
+        <button className="button button-danger-quiet" onClick={() => onDelete(segment.id)}>{segment.repeatSourceId ? '删除这次重复' : segment.partitionKey ? '跳过此区' : '删除歌谱上的框'}</button>
       </details>
     </div> : <div className="inspector-empty"><strong>未选中乐句</strong></div>}
   </aside>

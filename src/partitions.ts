@@ -230,8 +230,10 @@ export function syncPartition(project: Project, partition: PagePartition, renumb
   const segments = [...project.segments.filter(segment => segment.pageId !== partition.pageId || !segment.partitionKey), ...generated]
   const byId = new Map(generated.map(segment => [segment.id, segment]))
   const sameTopology = old.length === generated.length && old.every(segment => byId.has(segment.id))
+  const repeats = project.segments.filter(segment => segment.repeatSourceId)
   const pageIndex = new Map(project.pages.map((page, index) => [page.id, index]))
-  if (partition.numberedKeys !== undefined) {
+  if (sameTopology && !renumber && repeats.length) segments.splice(0, segments.length, ...project.segments.map(segment => byId.get(segment.id) || segment))
+  else if (partition.numberedKeys !== undefined) {
     const numbered = new Map(generated.map((segment, index) => [segment.id, index]))
     segments.sort((a, b) => (pageIndex.get(a.pageId) || 0) - (pageIndex.get(b.pageId) || 0) ||
       (a.pageId === partition.pageId ? (numbered.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (numbered.get(b.id) ?? Number.MAX_SAFE_INTEGER) : 0))
@@ -249,6 +251,20 @@ export function syncPartition(project: Project, partition: PagePartition, renumb
     segments.sort((a, b) => (pageIndex.get(a.pageId) || 0) - (pageIndex.get(b.pageId) || 0) ||
       (verseByCell.get(a.partitionKey || '') || 1) - (verseByCell.get(b.partitionKey || '') || 1) ||
       a.region.y - b.region.y || a.region.x - b.region.x)
+  }
+  // Repeated performances share the source geometry, but retain their own order and timing.
+  // Reinsert them beside their previous surviving predecessor after sorting the base cells.
+  const repeatIds = new Set(repeats.map(segment => segment.id))
+  for (let index = segments.length - 1; index >= 0; index--) {
+    if (repeatIds.has(segments[index].id)) segments.splice(index, 1)
+  }
+  for (const repeat of repeats) {
+    const source = segments.find(segment => segment.id === repeat.repeatSourceId)
+    if (!source) continue
+    const before = project.segments.slice(0, project.segments.indexOf(repeat))
+    const predecessor = before.reverse().find(segment => segments.some(item => item.id === segment.id))
+    const index = predecessor ? segments.findIndex(segment => segment.id === predecessor.id) + 1 : 0
+    segments.splice(index, 0, { ...repeat, pageId: source.pageId, region: source.region, regions: source.regions })
   }
   const retained = new Set(segments.map(segment => segment.id))
   const flags = project.flags?.filter(flag => retained.has(flag.segmentId))

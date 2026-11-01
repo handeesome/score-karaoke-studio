@@ -6,6 +6,7 @@ require.extensions['.ts'] = (module, file) => module._compile(ts.transpileModule
 }).outputText, file)
 const { emptyPartition, addGuide, addCellCut, partitionCells, moveGuide, removeGuide, syncPartition, partitionLyricRows, automaticLyricRows, withLyricOrder, initializePartitionNumbers, numberPartitionCell, resetPartitionNumbers, restoreNumberingSlots } = require('../src/partitions.ts')
 const { bindTimingToScoreOrder } = require('../src/utils.ts')
+const { repeatScoreRegions } = require('../src/projectActions.ts')
 const test = require('node:test')
 const guide = (p, axis, value, id) => addGuide(p, axis, value, id)
 const base = () => {
@@ -14,6 +15,34 @@ const base = () => {
   return p
 }
 const project = () => ({ version: 1, projectName: 'test', pages: [{ id: 'p1' }, { id: 'p2' }], segments: [], flags: [], source: {}, highlight: { mode: 'full', opacity: .32 } })
+
+test('repeated partition performances keep their order and timing while guides move', () => {
+  let state = syncPartition(project(), base())
+  const partition = { ...state.partitions[0], numberedKeys: state.segments.map(s => s.partitionKey) }
+  state.partitions = [partition]
+  const sourceId = state.segments[0].id
+  state = repeatScoreRegions(state, [sourceId], 30, () => 'repeat')
+  state.segments.at(-1).timingSet = true
+  state.segments.at(-1).startTime = 12
+  state.segments.at(-1).endTime = 16
+  const secondPage = { ...state.segments[1], id: 'page2', pageId: 'p2', partitionKey: undefined }
+  state.segments.splice(2, 0, secondPage)
+  // A repeat may be moved earlier via the existing phrase-order controls.
+  const repeated = state.segments.pop()
+  state.segments.splice(1, 0, repeated)
+  const ids = state.segments.map(s => s.id)
+  const next = syncPartition(state, moveGuide(partition, 'left', .15))
+  assert.deepEqual(next.segments.map(s => s.id), ids)
+  assert.deepEqual(next.segments[1].region, next.segments[0].region)
+  assert.equal(next.segments[1].region.x, .15)
+  assert.equal(next.segments[1].startTime, 12)
+  assert.equal(next.segments[1].endTime, 16)
+  assert.equal(next.segments[1].timingSet, true)
+  const cut = syncPartition(next, addCellCut(next.partitions[0], .5, .3, 'cut'))
+  assert.deepEqual(cut.segments.find(s => s.id === 'repeat').region, cut.segments.find(s => s.id === sourceId).region)
+  const skipped = syncPartition(next, { ...next.partitions[0], excluded: [next.segments[0].partitionKey] })
+  assert.ok(skipped.segments.every(s => s.id !== sourceId && s.id !== 'repeat'))
+})
 
 test('only four explicitly drawn sides form a cell; page margins stay outside', () => {
   const p = base()

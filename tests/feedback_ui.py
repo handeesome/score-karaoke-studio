@@ -148,6 +148,7 @@ window = webview.create_window('Feedback regression test', 'http://127.0.0.1:187
 result = {'checks': []}
 phase = -1
 phases = [41] if '--export-repeat' in sys.argv else [40] if '--score-entry' in sys.argv else [36, 37, 39] if '--project-actions' in sys.argv else [33, 34, 35] if '--imports' in sys.argv else [31, 32] if '--transport-keys' in sys.argv else [27, 28, 29, 30] if '--vocal-refinement' in sys.argv else [24, 25, 26] if '--update' in sys.argv else [22, 23] if '--export-features' in sys.argv else [20, 21] if '--inversion' in sys.argv else [18, 19] if '--numbering' in sys.argv else [16, 17] if '--layout' in sys.argv else [8, 9, 10] if '--merges' in sys.argv else [11, 12, 13, 14, 15] if '--ux' in sys.argv else list(range(27))
+if '--full-repeat' in sys.argv: phases = [42]
 
 def js(code): return window.evaluate_js(code)
 def wait(expr, predicate=bool, seconds=8):
@@ -1183,7 +1184,34 @@ def repeat_export():
     assert not js('Boolean(document.querySelector(".job-card"))')
     check('Completed exports always allow regeneration; cancel preserves result; open failure offers regeneration; phrase and output changes invalidate results, including edits during export')
 
-cases = [legacy, automatic, exporting, waveform_failure, score_zoom, wipe_timing, full_timing, full_reopen, merge_wipe, merge_full, merge_reopen, readability, preferences_reopen, marking, cursor_wipe, cursor_full, editor_layout, editor_layout_reopen, manual_numbering, automatic_numbering, inversion, inversion_reopen, export_features, export_features_reopen, update_modal, update_modal, update_modal, vocal_refinement, vocal_refinement, vocal_refinement, vocal_refinement, transport_keys, transport_keys, timeline_progress_zoom, score_imports, home_file_drop, delete_score_pages, delete_score_pages, home_project_actions, home_project_actions, score_entry_rules, repeat_export]
+def full_repeat():
+    original = state()['segments'][0]
+    pointer(.5, .3)
+    click('重复使用选中框')
+    repeated = state()['segments'][-1]
+    assert repeated['repeatSourceId'] == original['id'] and not repeated['timingSet']
+    assert repeated['region'] == original['region'] and not repeated.get('partitionKey')
+    assert js('document.querySelector(".partition-editor").classList.contains("tool-line-edit")')
+    click('撤销'); assert len(state()['segments']) == 1
+    click('重做'); assert len(state()['segments']) == 2
+    js("Object.defineProperty(document.querySelector('audio'),'currentTime',{value:6,writable:true,configurable:true})")
+    js("document.querySelector('.flag-button').click()")
+    time.sleep(.2)
+    marked = state()
+    assert marked['segments'][0]['endTime'] == 6
+    assert marked['segments'][1]['startTime'] == 6 and marked['segments'][1]['timingSet']
+    click('重复使用选中框')
+    assert state()['segments'][-1]['repeatSourceId'] == original['id']
+    time.sleep(.4)
+    click('删除这次重复')
+    assert len(state()['segments']) == 2
+    assert state()['segments'][0]['id'] == original['id']
+    assert not state()['partitions'][0]['excluded']
+    click('撤销'); assert len(state()['segments']) == 3
+    click('重做'); assert len(state()['segments']) == 2
+    check('Full-mode repeat supports selection, undo/redo, independent marking, repeating a repeat and deleting only that performance')
+
+cases = [legacy, automatic, exporting, waveform_failure, score_zoom, wipe_timing, full_timing, full_reopen, merge_wipe, merge_full, merge_reopen, readability, preferences_reopen, marking, cursor_wipe, cursor_full, editor_layout, editor_layout_reopen, manual_numbering, automatic_numbering, inversion, inversion_reopen, export_features, export_features_reopen, update_modal, update_modal, update_modal, vocal_refinement, vocal_refinement, vocal_refinement, vocal_refinement, transport_keys, transport_keys, timeline_progress_zoom, score_imports, home_file_drop, delete_score_pages, delete_score_pages, home_project_actions, home_project_actions, score_entry_rules, repeat_export, full_repeat]
 def loaded():
     global phase
     try:
@@ -1200,6 +1228,11 @@ def loaded():
         if next_phase == len(phases): window.destroy(); return
         phase = phases[next_phase]
         fixture = copy.deepcopy(base)
+        if phase == 42:
+            fixture['segments'][0]['partitionKey'] = 'p1:top:bottom:left:right'
+            fixture['partitions'] = [{'pageId': 'p1', 'horizontal': [{'id': 'top', 'position': .2}, {'id': 'bottom', 'position': .5}],
+                                      'vertical': [{'id': 'left', 'position': .1}, {'id': 'right', 'position': .9}],
+                                      'cuts': [], 'excluded': [], 'numberedKeys': ['p1:top:bottom:left:right']}]
         control['wave_error'] = phase == 3
         control['wave_pending'] = False
         control['score_import_error'] = False
@@ -1262,4 +1295,4 @@ try: webview.start(gui='edgechromium', private_mode=False, storage_path=str(DATA
 finally: timer.cancel(); server.should_exit = True
 print(json.dumps(result, ensure_ascii=True), flush=True)
 (DATA / 'result.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
-assert 'error' not in result and len(result['checks']) == (1 if '--export-repeat' in sys.argv else 1 if '--score-entry' in sys.argv else 3 if '--project-actions' in sys.argv else 3 if '--imports' in sys.argv else 2 if '--transport-keys' in sys.argv else 4 if '--vocal-refinement' in sys.argv else 3 if '--update' in sys.argv else 2 if '--export-features' in sys.argv else 2 if '--inversion' in sys.argv else 2 if '--numbering' in sys.argv else 2 if '--layout' in sys.argv else 3 if '--merges' in sys.argv else 5 if '--ux' in sys.argv else 32), result
+assert 'error' not in result and len(result['checks']) == (1 if '--full-repeat' in sys.argv else 1 if '--export-repeat' in sys.argv else 1 if '--score-entry' in sys.argv else 3 if '--project-actions' in sys.argv else 3 if '--imports' in sys.argv else 2 if '--transport-keys' in sys.argv else 4 if '--vocal-refinement' in sys.argv else 3 if '--update' in sys.argv else 2 if '--export-features' in sys.argv else 2 if '--inversion' in sys.argv else 2 if '--numbering' in sys.argv else 2 if '--layout' in sys.argv else 3 if '--merges' in sys.argv else 5 if '--ux' in sys.argv else 32), result

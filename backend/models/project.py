@@ -32,6 +32,7 @@ class ProjectSegment(BaseModel):
     direction: str = "left-to-right"
     text: str | None = None
     partitionKey: str | None = None
+    repeatSourceId: str | None = None
     @model_validator(mode="after")
     def valid_times(self):
         if self.startTime >= self.endTime:
