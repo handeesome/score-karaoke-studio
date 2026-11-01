@@ -149,6 +149,7 @@ result = {'checks': []}
 phase = -1
 phases = [41] if '--export-repeat' in sys.argv else [40] if '--score-entry' in sys.argv else [36, 37, 39] if '--project-actions' in sys.argv else [33, 34, 35] if '--imports' in sys.argv else [31, 32] if '--transport-keys' in sys.argv else [27, 28, 29, 30] if '--vocal-refinement' in sys.argv else [24, 25, 26] if '--update' in sys.argv else [22, 23] if '--export-features' in sys.argv else [20, 21] if '--inversion' in sys.argv else [18, 19] if '--numbering' in sys.argv else [16, 17] if '--layout' in sys.argv else [8, 9, 10] if '--merges' in sys.argv else [11, 12, 13, 14, 15] if '--ux' in sys.argv else list(range(27))
 if '--full-repeat' in sys.argv: phases = [42]
+if '--number-aspect' in sys.argv: phases = [43]
 
 def js(code): return window.evaluate_js(code)
 def wait(expr, predicate=bool, seconds=8):
@@ -175,7 +176,7 @@ def check(name): result['checks'].append(name)
 def capture(name):
     # Capture simple initial views only; later interaction checks use DOM geometry.
     if '--no-capture' in sys.argv: return
-    if name not in ('editor-large.png', 'editor-compact.png', 'update-controls-24.png', 'update-controls-26.png', 'timeline-progress-zoom.png', 'score-import-pages.png'): return
+    if name not in ('editor-large.png', 'editor-compact.png', 'update-controls-24.png', 'update-controls-26.png', 'timeline-progress-zoom.png', 'score-import-pages.png', 'number-aspect-wide.png'): return
     from System import Action
     from System.IO import FileStream, FileMode
     from Microsoft.Web.WebView2.Core import CoreWebView2CapturePreviewImageFormat
@@ -1211,7 +1212,46 @@ def full_repeat():
     click('重做'); assert len(state()['segments']) == 2
     check('Full-mode repeat supports selection, undo/redo, independent marking, repeating a repeat and deleting only that performance')
 
-cases = [legacy, automatic, exporting, waveform_failure, score_zoom, wipe_timing, full_timing, full_reopen, merge_wipe, merge_full, merge_reopen, readability, preferences_reopen, marking, cursor_wipe, cursor_full, editor_layout, editor_layout_reopen, manual_numbering, automatic_numbering, inversion, inversion_reopen, export_features, export_features_reopen, update_modal, update_modal, update_modal, vocal_refinement, vocal_refinement, vocal_refinement, vocal_refinement, transport_keys, transport_keys, timeline_progress_zoom, score_imports, home_file_drop, delete_score_pages, delete_score_pages, home_project_actions, home_project_actions, score_entry_rules, repeat_export, full_repeat]
+def number_aspect():
+    def shapes():
+        return js("""[...document.querySelectorAll('.region-number')].map(e=>{
+            const r=e.querySelector('rect').getBoundingClientRect(),m=e.querySelector('text').getScreenCTM();
+            return {ratio:r.width/r.height,scale:Math.hypot(m.a,m.b)/Math.hypot(m.c,m.d)};
+        })""")
+    def verify():
+        metrics = shapes()
+        assert len(metrics) == 3, metrics
+        assert all(abs(m['ratio']-34/24)<.01 and abs(m['scale']-1)<.005 for m in metrics), metrics
+        # The third performance sits above the first row of two numbers, without overlapping it.
+        assert js("""(() => {const r=[...document.querySelectorAll('.region-number-bg')].map(e=>e.getBoundingClientRect());return r[2].bottom<r[0].top})()""")
+    for page in range(4):
+        for mode in ('整框', '从左到右'):
+            click(mode)
+            verify()
+        if page == 0:
+            capture('number-aspect-wide.png')
+        # Zoom changes the size of both axes equally, including the repeat-number spacing.
+        js("""(() => {const p=document.querySelector('.score-page'),r=p.getBoundingClientRect();p.dispatchEvent(new WheelEvent('wheel',{bubbles:true,cancelable:true,clientX:r.left+100,clientY:r.top+50,deltaY:-120}))})()""")
+        time.sleep(.2)
+        verify()
+        js("document.querySelector('.region-number-bg').scrollIntoView({block:'center'})")
+        time.sleep(.15)
+        assert js("""(() => {const e=document.querySelector('.region-number'),r=e.getBoundingClientRect();return e.contains(document.elementFromPoint(r.left+r.width/2,r.top+r.height/2))})()""")
+        # Double-click editing must receive the same aspect correction as the displayed number.
+        first_id = js("document.querySelector('.annotation').dataset.scoreId")
+        js("document.querySelector('.region-number').dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))")
+        wait('Boolean(document.querySelector(".region-number-editor input"))')
+        ratio = js("""(() => {const r=document.querySelector('.region-number-editor input').getBoundingClientRect();return r.width/r.height})()""")
+        assert abs(ratio-34/24)<.01, ratio
+        js("document.querySelector('.region-number-editor input').dispatchEvent(new KeyboardEvent('keydown',{key:'2',bubbles:true}))")
+        js("document.querySelector('.region-number-editor input').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))")
+        wait('!document.querySelector(".region-number-editor")')
+        assert state()['segments'][1]['id'] == first_id
+        click('撤销')
+        if page < 3: click('下一页歌谱')
+    check('Number badges, repeat spacing and editable inputs keep their shape on landscape, A4, square and tall pages in both modes and after zoom; hit testing and reorder remain functional')
+
+cases = [legacy, automatic, exporting, waveform_failure, score_zoom, wipe_timing, full_timing, full_reopen, merge_wipe, merge_full, merge_reopen, readability, preferences_reopen, marking, cursor_wipe, cursor_full, editor_layout, editor_layout_reopen, manual_numbering, automatic_numbering, inversion, inversion_reopen, export_features, export_features_reopen, update_modal, update_modal, update_modal, vocal_refinement, vocal_refinement, vocal_refinement, vocal_refinement, transport_keys, transport_keys, timeline_progress_zoom, score_imports, home_file_drop, delete_score_pages, delete_score_pages, home_project_actions, home_project_actions, score_entry_rules, repeat_export, full_repeat, number_aspect]
 def loaded():
     global phase
     try:
@@ -1228,6 +1268,14 @@ def loaded():
         if next_phase == len(phases): window.destroy(); return
         phase = phases[next_phase]
         fixture = copy.deepcopy(base)
+        if phase == 43:
+            fixture['pages'] = [{**copy.deepcopy(base['pages'][0]), 'id': f'p{i}', 'width': w, 'height': h}
+                                for i, (w,h) in enumerate([(1600,700),(1000,1414),(1000,1000),(600,1800)])]
+            fixture['segments'] = [{**copy.deepcopy(base['segments'][0]), 'id': f's{i}-{n}', 'pageId': f'p{i}',
+                                    'region': {'x': .1, 'y': .35, 'width': .8, 'height': .1},
+                                    'timingSet': False, 'startTime': n*4, 'endTime': n*4+4}
+                                   for i in range(4) for n in range(3)]
+            fixture['flags'] = []
         if phase == 42:
             fixture['segments'][0]['partitionKey'] = 'p1:top:bottom:left:right'
             fixture['partitions'] = [{'pageId': 'p1', 'horizontal': [{'id': 'top', 'position': .2}, {'id': 'bottom', 'position': .5}],
@@ -1295,4 +1343,4 @@ try: webview.start(gui='edgechromium', private_mode=False, storage_path=str(DATA
 finally: timer.cancel(); server.should_exit = True
 print(json.dumps(result, ensure_ascii=True), flush=True)
 (DATA / 'result.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
-assert 'error' not in result and len(result['checks']) == (1 if '--full-repeat' in sys.argv else 1 if '--export-repeat' in sys.argv else 1 if '--score-entry' in sys.argv else 3 if '--project-actions' in sys.argv else 3 if '--imports' in sys.argv else 2 if '--transport-keys' in sys.argv else 4 if '--vocal-refinement' in sys.argv else 3 if '--update' in sys.argv else 2 if '--export-features' in sys.argv else 2 if '--inversion' in sys.argv else 2 if '--numbering' in sys.argv else 2 if '--layout' in sys.argv else 3 if '--merges' in sys.argv else 5 if '--ux' in sys.argv else 32), result
+assert 'error' not in result and len(result['checks']) == (1 if '--number-aspect' in sys.argv else 1 if '--full-repeat' in sys.argv else 1 if '--export-repeat' in sys.argv else 1 if '--score-entry' in sys.argv else 3 if '--project-actions' in sys.argv else 3 if '--imports' in sys.argv else 2 if '--transport-keys' in sys.argv else 4 if '--vocal-refinement' in sys.argv else 3 if '--update' in sys.argv else 2 if '--export-features' in sys.argv else 2 if '--inversion' in sys.argv else 2 if '--numbering' in sys.argv else 2 if '--layout' in sys.argv else 3 if '--merges' in sys.argv else 5 if '--ux' in sys.argv else 32), result
