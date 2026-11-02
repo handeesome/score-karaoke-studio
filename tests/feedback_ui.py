@@ -607,6 +607,10 @@ def manual_numbering():
     assert js('document.querySelectorAll(".region-number").length') == 0
     click('编号')
     pointer(.5,.125); pointer(.5,.525); pointer(.5,.175); pointer(.5,.125)
+    assert len(state()['segments']) == 4
+    assert state()['segments'][-1]['repeatSourceId'] == state()['segments'][0]['id']
+    assert js('document.querySelectorAll(".region-number").length') == 4
+    click('撤销')
     assert len(state()['segments']) == 3
     assert js('document.querySelectorAll(".region-number").length') == 3
     assert not js("[...document.querySelectorAll('button')].some(b=>['完成编号','撤销上一个','取消编号'].includes(b.innerText))")

@@ -1,5 +1,6 @@
 import type { PagePartition, PartitionGuide, Project, Region, Segment } from './types'
 import { refreshTimingFlags, timedSegmentIds } from './timing'
+import { repeatScoreRegions } from './projectActions'
 
 export type PartitionTool = 'line-h' | 'line-v' | 'cell-cut' | 'line-edit' | 'number'
 export type PartitionCell = { key: string; region: Region; top: string; bottom: string; left: string; right: string }
@@ -19,7 +20,8 @@ export function initializePartitionNumbers(project: Project): Project {
 /** Clear the current page's order, keeping its recorded slots for immediate renumbering. */
 export function resetPartitionNumbers(project: Project, partition: PagePartition): Project {
   const assigned = timedSegmentIds(project)
-  const removed = project.segments.filter(s => s.pageId === partition.pageId && s.partitionKey)
+  const sourceIds = new Set(project.segments.filter(s => s.pageId === partition.pageId && s.partitionKey).map(s => s.id))
+  const removed = project.segments.filter(s => sourceIds.has(s.id) || (s.repeatSourceId && sourceIds.has(s.repeatSourceId)))
   const slots = [...removed.filter(s => assigned.has(s.id)).map(s => ({ startTime: s.startTime, endTime: s.endTime })), ...(partition.numberingSlots || [])]
     .sort((a, b) => a.startTime - b.startTime)
   const ending = Boolean(partition.numberingEnd || project.flags?.some(f => f.kind === 'end' && removed.some(s => s.id === f.segmentId)))
@@ -29,7 +31,12 @@ export function resetPartitionNumbers(project: Project, partition: PagePartition
 /** One click is one saved edit. Reuse held time slots after restarting the numbering. */
 export function numberPartitionCell(project: Project, partition: PagePartition, key: string): Project {
   const keys = project.segments.filter(s => s.pageId === partition.pageId && s.partitionKey).map(s => s.partitionKey!)
-  if (keys.includes(key) || partition.excluded.includes(key) || !partitionCells(partition).some(cell => cell.key === key)) return project
+  if (partition.excluded.includes(key) || !partitionCells(partition).some(cell => cell.key === key)) return project
+  const source = project.segments.find(s => s.pageId === partition.pageId && s.partitionKey === key)
+  if (source) {
+    const next = repeatScoreRegions(project, [source.id], project.audioDuration || 0, () => `repeat-${crypto.randomUUID()}`)
+    return restoreNumberingSlots(next, partition.pageId, [next.segments[next.segments.length - 1].id])
+  }
   const next = syncPartition(project, { ...partition, numberedKeys: [...keys, key], lyricOrder: undefined }, true)
   const target = next.segments.find(s => s.partitionKey === key)
   return target ? restoreNumberingSlots(next, partition.pageId, [target.id]) : next

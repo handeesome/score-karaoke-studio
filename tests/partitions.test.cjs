@@ -239,16 +239,44 @@ test('opening an old partition preserves every existing number and new cuts do n
   assert.deepEqual(next.segments.map(s => s.id), migrated.segments.map(s => s.id))
 })
 
-test('one click assigns one saved number and duplicate clicks make no edit', () => {
+test('each numbering click appends a phrase, including repeated cells after reopening', () => {
   const p = { ...verses(), numberedKeys: [] }, initial = syncPartition(project(), p)
   const keys = partitionCells(p).filter(c => !p.excluded.includes(c.key)).map(c => c.key)
   const first = numberPartitionCell(initial, initial.partitions[0], keys[3])
   assert.equal(first.segments.length, 1)
   assert.equal(first.segments[0].partitionKey, keys[3])
-  assert.equal(numberPartitionCell(first, first.partitions[0], keys[3]), first)
-  const reopened = initializePartitionNumbers(JSON.parse(JSON.stringify(first)))
+  const repeated = numberPartitionCell(first, first.partitions[0], keys[3])
+  assert.equal(repeated.segments.length, 2)
+  assert.equal(repeated.segments[1].repeatSourceId, first.segments[0].id)
+  assert.notEqual(repeated.segments[1].id, first.segments[0].id)
+  assert.equal(repeated.segments[1].timingSet, false)
+  const reopened = initializePartitionNumbers(JSON.parse(JSON.stringify(repeated)))
   const second = numberPartitionCell(reopened, reopened.partitions[0], keys[0])
-  assert.deepEqual(second.segments.map(s => s.partitionKey), [keys[3],keys[0]])
+  assert.deepEqual(second.segments.map(s => s.partitionKey), [keys[3], undefined, keys[0]])
+  const third = numberPartitionCell(second, second.partitions[0], keys[3])
+  assert.deepEqual(third.segments.map(s => s.repeatSourceId), [undefined, first.segments[0].id, undefined, first.segments[0].id])
+  assert.equal(new Set(third.segments.map(s => s.id)).size, 4)
+  assert.equal(numberPartitionCell(third, third.partitions[0], 'missing'), third)
+  assert.equal(numberPartitionCell(third, third.partitions[0], partitionCells(p).find(c => p.excluded.includes(c.key)).key), third)
+  const moved = syncPartition(third, moveGuide(third.partitions[0], 'left', .12))
+  assert.deepEqual(moved.segments.map(s => s.id), third.segments.map(s => s.id))
+  assert.deepEqual(moved.segments[1].region, moved.segments[0].region)
+})
+
+test('renumbering repeated cells restores each independent timing slot and the ending', () => {
+  const p = { ...verses(), numberedKeys: [] }, initial = syncPartition(project(), p)
+  const key = partitionCells(p)[0].key
+  let before = initial
+  for (let i = 0; i < 3; i++) before = numberPartitionCell(before, before.partitions[0], key)
+  before.segments.forEach((s, i) => { s.startTime = i * 4; s.endTime = (i + 1) * 4; s.timingSet = true })
+  before.flags = [{ id: 'end', segmentId: before.segments[2].id, time: 12, kind: 'end' }]
+  let after = resetPartitionNumbers(before, before.partitions[0])
+  assert.equal(after.segments.length, 0)
+  assert.equal(after.partitions[0].numberingSlots.length, 3)
+  for (let i = 0; i < 3; i++) after = numberPartitionCell(after, after.partitions[0], key)
+  assert.deepEqual(after.segments.map(s => [s.startTime, s.endTime, s.timingSet]), before.segments.map(s => [s.startTime, s.endTime, s.timingSet]))
+  assert.equal(after.flags.at(-1).kind, 'end')
+  assert.equal(after.flags.at(-1).segmentId, after.segments[2].id)
 })
 
 test('restarting and immediately renumbering preserves recorded time slots and the final ending', () => {

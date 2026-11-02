@@ -228,7 +228,6 @@ function App() {
     selectOne(null); setTool(tool === 'number' ? 'line-edit' : 'number')
   }
   const assignNumber = (key: string) => {
-    if (projectRef.current.segments.some(segment => segment.partitionKey === key)) return
     lastHistoryAt.current = 0
     setProject(previous => numberPartitionCell(previous, previous.partitions?.find(p => p.pageId === currentPage?.id) || pagePartition, key))
   }
