@@ -19,7 +19,7 @@ import DisplaySize, { type TextSize } from './components/DisplaySize'
 import InspectorPanel from './components/InspectorPanel'
 import ToolMenu from './components/ToolMenu'
 import { connectFullTiming, editTiming, insertTiming, rebindAfterMerge, refreshTimingFlags, removeTiming, timedSegmentIds, type TimingEdge } from './timing'
-import { emptyPartition, initializePartitionNumbers, numberPartitionCell, partitionLyricRows, removeGuide, resetPartitionNumbers, restoreNumberingSlots, syncPartition, type PartitionTool } from './partitions'
+import { emptyPartition, initializePartitionNumbers, numberPartitionCell, partitionLyricRows, removeGuide, removePartitionNumber, resetPartitionNumbers, restoreNumberingSlots, syncPartition, type PartitionTool } from './partitions'
 import type { PagePartition } from './types'
 import { initialProject } from './types'
 import { copyRegionToNextLine, loadInkPage } from './scoreInk'
@@ -506,6 +506,16 @@ function App() {
     if (cancelNumberEdit.current || !edit?.value) return
     cancelNumberEdit.current = true
     moveSegmentTo(edit.id, edit.value)
+  }
+  const deleteNumber = (event: React.KeyboardEvent<SVGGElement>, id: string) => {
+    if ((event.key !== 'Backspace' && event.key !== 'Delete') || event.ctrlKey || event.altKey || event.metaKey) return
+    event.preventDefault()
+    event.stopPropagation()
+    if (event.repeat) return
+    lastHistoryAt.current = 0
+    setProject(previous => removePartitionNumber(previous, id))
+    selectOne(null)
+    flash('已移除这个编号', undoAction)
   }
   const updateSegment = (id: string, patch: Partial<Segment>) => {
     const changedTime = patch.startTime !== undefined || patch.endTime !== undefined
@@ -1261,7 +1271,7 @@ function App() {
                   segments={project.segments.filter(segment => segment.pageId === currentPage.id)} onChange={changePartition}
                   onNumber={assignNumber}
                   onLine={setSelectedLine} onSegment={selectOne} onMessage={flash} onBlocked={() => explainPartitionConflict(partitionTool)} onInvalidCut={() => setNotice({ title: '这里还不能画框内竖线', description: '请点击由上、下、左、右四条边围成的分区内部，并避开左右边线。还没形成分区时，先画横线和左右两条整页竖线。', primary: { label: '画横线', onClick: () => requestPartitionTool('line-h') }, secondary: { label: '画整页竖线', onClick: () => requestPartitionTool('line-v') } })} onLegacyCut={(segment, event) => splitSegment(segment, 0, event)}/>}
-                {project.segments.flatMap(seg => segmentRegions(seg).map((item, part) => ({ seg, item, part })).filter(entry => entry.item.pageId === currentPage.id)).sort((a, b) => Number(selectedIds.includes(a.seg.id)) - Number(selectedIds.includes(b.seg.id))).map(({ seg, item, part }) => { const r = item.region; const matching = project.segments.filter(candidate => sharedRegionKey(candidate) === sharedRegionKey(seg)); const repeatIndex = matching.findIndex(candidate => candidate.id === seg.id); const x = r.x * 1000; const y = r.y * 1414; const badgeX = x + (x + 68 <= 1000 ? repeatIndex % 2 * 36 : -(repeatIndex % 2) * 36); const badgeY = Math.max(2, y - (29 + Math.floor(repeatIndex / 2) * 26) * numberScaleY); return <g key={`${seg.id}-${part}`} data-score-id={seg.id} data-partition-key={seg.partitionKey} className={`annotation ${selectedIds.includes(seg.id) ? 'is-selected' : ''}`} onPointerDown={e => { if (highlightMode === 'full') return; e.stopPropagation(); if (e.shiftKey) { selectSegment(seg.id, true); return }; const wasSelected = selectedIds.includes(seg.id); selectSegment(seg.id, false); if (tool === 'row') return; if (tool === 'cut') { splitSegment(seg, part, e); return }; if (seg.partitionKey || !wasSelected) return; dragRef.current = { id: seg.id, part, kind: 'move', startX: e.clientX, startY: e.clientY, region: { ...r } }; (e.currentTarget as SVGGElement).setPointerCapture(e.pointerId) }}>
+                {project.segments.flatMap(seg => segmentRegions(seg).map((item, part) => ({ seg, item, part })).filter(entry => entry.item.pageId === currentPage.id)).sort((a, b) => Number(selectedIds.includes(a.seg.id)) - Number(selectedIds.includes(b.seg.id))).map(({ seg, item, part }) => { const canRemoveNumber = highlightMode === 'full' && Boolean(seg.partitionKey || seg.repeatSourceId); const r = item.region; const matching = project.segments.filter(candidate => sharedRegionKey(candidate) === sharedRegionKey(seg)); const repeatIndex = matching.findIndex(candidate => candidate.id === seg.id); const x = r.x * 1000; const y = r.y * 1414; const badgesPerRow = Math.max(1, Math.floor((Math.min(r.width * 1000, 1000 - x) + 2) / 36)); const badgeX = Math.min(x, 966) + repeatIndex % badgesPerRow * 36; const badgeY = Math.max(2, y - (29 + Math.floor(repeatIndex / badgesPerRow) * 26) * numberScaleY); return <g key={`${seg.id}-${part}`} data-score-id={seg.id} data-partition-key={seg.partitionKey} className={`annotation ${selectedIds.includes(seg.id) ? 'is-selected' : ''}`} onPointerDown={e => { if (highlightMode === 'full') return; e.stopPropagation(); if (e.shiftKey) { selectSegment(seg.id, true); return }; const wasSelected = selectedIds.includes(seg.id); selectSegment(seg.id, false); if (tool === 'row') return; if (tool === 'cut') { splitSegment(seg, part, e); return }; if (seg.partitionKey || !wasSelected) return; dragRef.current = { id: seg.id, part, kind: 'move', startX: e.clientX, startY: e.clientY, region: { ...r } }; (e.currentTarget as SVGGElement).setPointerCapture(e.pointerId) }}>
                   <rect className="region-hit-area" x={r.x * 1000} y={r.y * 1414} width={r.width * 1000} height={r.height * 1414} rx="4"/>
                   <rect className="region-outline" x={r.x * 1000} y={r.y * 1414} width={r.width * 1000} height={r.height * 1414} rx="4"/>
                   <g transform={`translate(${badgeX},${badgeY}) scale(1,${numberScaleY})`}>
@@ -1269,7 +1279,25 @@ function App() {
                     ? <foreignObject className="region-number-editor" x="0" y="0" width="34" height="24" onPointerDown={event => event.stopPropagation()}>
                         <input ref={numberInputRef} type="text" inputMode="numeric" aria-label="乐句的新序号" value={editingNumber.value} onChange={event => { replaceNumberOnKey.current = false; setEditingNumber({ ...editingNumber, value: event.target.value.replace(/\D/g, '') }) }} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Enter') { event.preventDefault(); commitNumberEdit() } else if (event.key === 'Escape') { cancelNumberEdit.current = true; setEditingNumber(null) } else if (replaceNumberOnKey.current && /^\d$/.test(event.key) && !event.ctrlKey && !event.metaKey && !event.altKey) { event.preventDefault(); replaceNumberOnKey.current = false; setEditingNumber({ ...editingNumber, value: event.key }) } else if (replaceNumberOnKey.current && (event.key === 'Backspace' || event.key === 'Delete')) { event.preventDefault(); replaceNumberOnKey.current = false; setEditingNumber({ ...editingNumber, value: '' }) } else if (event.key.startsWith('Arrow') || event.key === 'Home' || event.key === 'End') replaceNumberOnKey.current = false }} onBlur={commitNumberEdit}/>
                       </foreignObject>
-                    : <g className="region-number" onPointerDown={event => { event.stopPropagation(); selectSegment(seg.id, event.shiftKey) }} onDoubleClick={event => { event.stopPropagation(); if (event.shiftKey) return; cancelNumberEdit.current = false; replaceNumberOnKey.current = true; setEditingNumber({ id: seg.id, part, value: String(project.segments.indexOf(seg) + 1) }) }}><title>双击修改乐句序号</title><rect className="region-number-bg" width="34" height="24" rx="5"/><text className="region-number-text" x="17" y="17" textAnchor="middle">{String(project.segments.indexOf(seg) + 1).padStart(2, '0')}</text></g>}
+                    : <g className="region-number"
+                        tabIndex={canRemoveNumber ? 0 : undefined}
+                        onPointerDown={event => {
+                          event.stopPropagation()
+                          selectSegment(seg.id, event.shiftKey)
+                          if (canRemoveNumber) event.currentTarget.focus()
+                        }}
+                        onKeyDown={canRemoveNumber ? event => deleteNumber(event, seg.id) : undefined}
+                        onDoubleClick={event => {
+                          event.stopPropagation()
+                          if (event.shiftKey) return
+                          cancelNumberEdit.current = false
+                          replaceNumberOnKey.current = true
+                          setEditingNumber({ id: seg.id, part, value: String(project.segments.indexOf(seg) + 1) })
+                        }}>
+                        <title>{canRemoveNumber ? '双击修改编号，选中后按 Backspace 移除编号' : '双击修改乐句序号'}</title>
+                        <rect className="region-number-bg" width="34" height="24" rx="5"/>
+                        <text className="region-number-text" x="17" y="17" textAnchor="middle">{String(project.segments.indexOf(seg) + 1).padStart(2, '0')}</text>
+                      </g>}
                   </g>
                   {highlightMode !== 'full' && !seg.partitionKey && selected === seg.id && (['n', 's', 'w', 'e'] as const).map(edge => {
                     const x = r.x * 1000; const y = r.y * 1414

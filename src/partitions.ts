@@ -25,7 +25,7 @@ export function resetPartitionNumbers(project: Project, partition: PagePartition
   const slots = [...removed.filter(s => assigned.has(s.id)).map(s => ({ startTime: s.startTime, endTime: s.endTime })), ...(partition.numberingSlots || [])]
     .sort((a, b) => a.startTime - b.startTime)
   const ending = Boolean(partition.numberingEnd || project.flags?.some(f => f.kind === 'end' && removed.some(s => s.id === f.segmentId)))
-  return syncPartition(project, { ...partition, numberedKeys: [], lyricOrder: undefined, numberingSlots: slots, numberingEnd: ending }, true)
+  return syncPartition(project, { ...partition, numberedKeys: [], lyricOrder: undefined, numberingSlots: slots, numberingEnd: ending })
 }
 
 /** One click is one saved edit. Reuse held time slots after restarting the numbering. */
@@ -37,9 +37,26 @@ export function numberPartitionCell(project: Project, partition: PagePartition, 
     const next = repeatScoreRegions(project, [source.id], project.audioDuration || 0, () => `repeat-${crypto.randomUUID()}`)
     return restoreNumberingSlots(next, partition.pageId, [next.segments[next.segments.length - 1].id])
   }
-  const next = syncPartition(project, { ...partition, numberedKeys: [...keys, key], lyricOrder: undefined }, true)
+  const next = syncPartition(project, { ...partition, numberedKeys: [...keys, key], lyricOrder: undefined })
   const target = next.segments.find(s => s.partitionKey === key)
   return target ? restoreNumberingSlots(next, partition.pageId, [target.id]) : next
+}
+
+/** Remove one performance while leaving the cell available for numbering. */
+export function removePartitionNumber(project: Project, id: string): Project {
+  const source = project.segments.find(segment => segment.id === id)
+  if (!source?.partitionKey && !source?.repeatSourceId) return project
+  const promoted = source.partitionKey && project.segments.find(segment => segment.repeatSourceId === id)
+  const segments = project.segments.filter(segment => segment.id !== id).map(segment => {
+    if (!promoted || segment.repeatSourceId !== id) return segment
+    if (segment.id === promoted.id) return { ...segment, partitionKey: source.partitionKey, repeatSourceId: undefined }
+    return { ...segment, repeatSourceId: promoted.id }
+  })
+  const partitions = source.partitionKey ? project.partitions?.map(partition => partition.pageId !== source.pageId ? partition : {
+    ...partition, lyricOrder: undefined,
+    numberedKeys: segments.filter(segment => segment.pageId === partition.pageId && segment.partitionKey).map(segment => segment.partitionKey!),
+  }) : project.partitions
+  return refreshTimingFlags({ ...project, segments, partitions, flags: project.flags?.filter(flag => flag.segmentId !== id) })
 }
 
 /** Both manual and automatic numbering consume the same saved time slots. */
@@ -239,7 +256,13 @@ export function syncPartition(project: Project, partition: PagePartition, renumb
   const sameTopology = old.length === generated.length && old.every(segment => byId.has(segment.id))
   const repeats = project.segments.filter(segment => segment.repeatSourceId)
   const pageIndex = new Map(project.pages.map((page, index) => [page.id, index]))
-  if (sameTopology && !renumber && repeats.length) segments.splice(0, segments.length, ...project.segments.map(segment => byId.get(segment.id) || segment))
+  if (!renumber && partition.numberedKeys !== undefined) {
+    // Existing numbers follow performance order across pages. New cells go last.
+    const ordered = project.segments.map(segment => byId.get(segment.id) || segment)
+      .filter(segment => segment.pageId !== partition.pageId || !segment.partitionKey || byId.has(segment.id))
+    const orderedIds = new Set(ordered.map(segment => segment.id))
+    segments.splice(0, segments.length, ...ordered, ...generated.filter(segment => !orderedIds.has(segment.id)))
+  }
   else if (partition.numberedKeys !== undefined) {
     const numbered = new Map(generated.map((segment, index) => [segment.id, index]))
     segments.sort((a, b) => (pageIndex.get(a.pageId) || 0) - (pageIndex.get(b.pageId) || 0) ||

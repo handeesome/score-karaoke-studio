@@ -4,7 +4,7 @@ const ts = require('typescript')
 require.extensions['.ts'] = (module, file) => module._compile(ts.transpileModule(fs.readFileSync(file, 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
 }).outputText, file)
-const { emptyPartition, addGuide, addCellCut, partitionCells, moveGuide, removeGuide, syncPartition, partitionLyricRows, automaticLyricRows, withLyricOrder, initializePartitionNumbers, numberPartitionCell, resetPartitionNumbers, restoreNumberingSlots } = require('../src/partitions.ts')
+const { emptyPartition, addGuide, addCellCut, partitionCells, moveGuide, removeGuide, syncPartition, partitionLyricRows, automaticLyricRows, withLyricOrder, initializePartitionNumbers, numberPartitionCell, removePartitionNumber, resetPartitionNumbers, restoreNumberingSlots } = require('../src/partitions.ts')
 const { bindTimingToScoreOrder } = require('../src/utils.ts')
 const { repeatScoreRegions } = require('../src/projectActions.ts')
 const test = require('node:test')
@@ -277,6 +277,48 @@ test('renumbering repeated cells restores each independent timing slot and the e
   assert.deepEqual(after.segments.map(s => [s.startTime, s.endTime, s.timingSet]), before.segments.map(s => [s.startTime, s.endTime, s.timingSet]))
   assert.equal(after.flags.at(-1).kind, 'end')
   assert.equal(after.flags.at(-1).segmentId, after.segments[2].id)
+})
+
+test('removing the first number on a shared cell keeps the repeats in order and reuses the cell', () => {
+  const partition = { ...base(), numberedKeys: [] }
+  const [cell, other] = partitionCells(partition)
+  let state = syncPartition(project(), partition)
+  for (const key of [cell.key, other.key, cell.key, cell.key]) {
+    state = numberPartitionCell(state, state.partitions[0], key)
+  }
+  const [source, unrelated, firstRepeat, secondRepeat] = state.segments
+  state = removePartitionNumber(state, source.id)
+  assert.deepEqual(state.segments.map(s => s.id), [unrelated.id, firstRepeat.id, secondRepeat.id])
+  assert.equal(state.segments[1].partitionKey, cell.key)
+  assert.equal(state.segments[2].repeatSourceId, firstRepeat.id)
+  state = removePartitionNumber(state, secondRepeat.id)
+  state = removePartitionNumber(state, firstRepeat.id)
+  assert.deepEqual(state.partitions[0].excluded, [])
+  assert.deepEqual(partitionCells(state.partitions[0]), [cell, other])
+  assert.deepEqual(state.partitions[0].numberedKeys, [other.key])
+  state = numberPartitionCell(state, state.partitions[0], cell.key)
+  assert.deepEqual(state.segments.map(s => s.partitionKey), [other.key, cell.key])
+})
+
+test('new and repeated cells append in performance order when returning to an earlier page', () => {
+  let first = { ...base(), numberedKeys: [] }
+  for (let i = 1; i <= 10; i++) first = guide(first, 'horizontal', .2 + i * .017, `extra-${i}`)
+  const second = { ...first, pageId: 'p2' }
+  const keys = partitionCells(first).map(cell => cell.key)
+  let state = syncPartition(syncPartition(project(), first), second)
+  const number = (pageId, key) => {
+    state = numberPartitionCell(state, state.partitions.find(p => p.pageId === pageId), key)
+  }
+  for (const key of keys.slice(0, 10)) number('p1', key)
+  const pageTwoKey = partitionCells(second)[0].key
+  number('p2', pageTwoKey)
+  number('p1', keys[10])
+  assert.deepEqual(state.segments.map(s => s.partitionKey), [...keys.slice(0, 10), pageTwoKey, keys[10]])
+  number('p1', keys[0])
+  assert.equal(state.segments[12].repeatSourceId, state.segments[0].id)
+  const firstPage = state.partitions.find(p => p.pageId === 'p1')
+  const moved = syncPartition(state, moveGuide(firstPage, 'left', .12))
+  assert.deepEqual(moved.segments.map(s => s.id), state.segments.map(s => s.id))
 })
 
 test('restarting and immediately renumbering preserves recorded time slots and the final ending', () => {

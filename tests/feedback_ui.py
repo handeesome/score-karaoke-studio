@@ -669,12 +669,23 @@ def manual_numbering():
     time.sleep(.15)
     assert [round(s['region']['y'],2) for s in state()['segments']] == [.5,.2,.1,.6,.15,.55], {'project':state(),'input':js('document.querySelector(".region-number-editor input")?.value')}
     click('撤销');assert state()==before
+    js("""(() => {
+      const badge = document.querySelector('.region-number')
+      badge.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true, button: 0, pointerType: 'mouse'}))
+    })()""")
+    assert js("document.activeElement.matches('.region-number')")
+    js('document.activeElement.dispatchEvent(new KeyboardEvent("keydown",{key:"Backspace",bubbles:true,cancelable:true}))')
+    unnumbered = state()
+    assert len(unnumbered['segments']) == 5
+    assert unnumbered['partitions'][0]['excluded'] == before['partitions'][0]['excluded']
+    assert js('document.querySelectorAll(".partition-candidate.unnumbered").length') == 2
+    click('撤销'); assert state() == before
     js("document.querySelector('audio').currentTime=10")
     js("document.querySelector('.flag-button').click()")
     time.sleep(.15)
     assert state()['flags'][0]['time'] == 10
     saved_numbering=state()
-    check('Immediate numbering and editable badges; Backspace deletes cuts between numbered boxes with toolbar focus and undo restores them')
+    check('Number badges support reorder and Backspace unnumbering, cuts have their own Backspace shortcut, and undo restores both')
 
 
 def automatic_numbering():
@@ -1224,10 +1235,15 @@ def number_aspect():
         })""")
     def verify():
         metrics = shapes()
-        assert len(metrics) == 3, metrics
+        assert len(metrics) == 23, metrics
         assert all(abs(m['ratio']-34/24)<.01 and abs(m['scale']-1)<.005 for m in metrics), metrics
-        # The third performance sits above the first row of two numbers, without overlapping it.
-        assert js("""(() => {const r=[...document.querySelectorAll('.region-number-bg')].map(e=>e.getBoundingClientRect());return r[2].bottom<r[0].top})()""")
+        # Fill the frame's width before wrapping; all 22 badges fit without overlap.
+        assert js("""(() => {
+            const r=[...document.querySelectorAll('.region-number-bg')].map(e=>e.getBoundingClientRect());
+            const frame=document.querySelector('.region-outline').getBoundingClientRect();
+            return r.slice(0,22).every((b,i)=>Math.abs(b.top-r[0].top)<.1 && b.right<=frame.right+.1 && (!i || b.left>r[i-1].right))
+                && r[22].bottom<r[0].top && Math.abs(r[22].left-r[0].left)<.1;
+        })()""")
     for page in range(4):
         for mode in ('整框', '从左到右'):
             click(mode)
@@ -1278,7 +1294,7 @@ def loaded():
             fixture['segments'] = [{**copy.deepcopy(base['segments'][0]), 'id': f's{i}-{n}', 'pageId': f'p{i}',
                                     'region': {'x': .1, 'y': .35, 'width': .8, 'height': .1},
                                     'timingSet': False, 'startTime': n*4, 'endTime': n*4+4}
-                                   for i in range(4) for n in range(3)]
+                                   for i in range(4) for n in range(23)]
             fixture['flags'] = []
         if phase == 42:
             fixture['segments'][0]['partitionKey'] = 'p1:top:bottom:left:right'
